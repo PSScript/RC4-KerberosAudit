@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Prueft ob RC4 Kerberos aktiv in der Umgebung verwendet wird.

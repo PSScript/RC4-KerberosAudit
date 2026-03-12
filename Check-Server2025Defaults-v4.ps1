@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Prueft Windows Server 2025 Sicherheits-Defaults mit AD-nativer Erkennung.
