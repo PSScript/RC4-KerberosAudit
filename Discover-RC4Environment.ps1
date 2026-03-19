@@ -64,7 +64,7 @@ param(
     [string]$SmtpServer
 )
 
-Set-StrictMode -Version Latest
+Set-StrictMode -Version 2
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
 $reportDir = Join-Path $ReportPath "RC4_Discovery_$ts"
@@ -110,13 +110,22 @@ function Get-EncCategory {
 
 function Write-Status {
     param([string]$Label, [string]$Value, [string]$Color = 'White')
+    if (-not $Color) { $Color = 'White' }
     Write-Host "  $($Label.PadRight(35)) : " -NoNewline
     Write-Host $Value -ForegroundColor $Color
 }
 
+function SafeCount {
+    # Returns count that works with StrictMode and single objects
+    param($Collection)
+    if ($null -eq $Collection) { return 0 }
+    if ($Collection -is [array]) { return $Collection.Length }
+    return 1
+}
+
 function Export-ToCsv {
     param([array]$Data, [string]$Name)
-    if ($Data.Count -eq 0) { return $null }
+    if ((SafeCount $Data) -eq 0) { return $null }
     $p = Join-Path $reportDir "${Name}.csv"
     $Data | Export-Csv -Path $p -NoTypeInformation -Encoding UTF8 -Delimiter ';'
     return $p
@@ -185,9 +194,9 @@ function Get-CitrixInfrastructure {
             }
     } catch {}
 
-    Write-Status "Citrix-Systeme gefunden" "$($results.Count)" $(if ($results.Count -gt 0) {'Cyan'} else {'DarkGray'})
-    $rc4 = $results | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') }
-    Write-Status "davon mit RC4/DES im Attribut" "$($rc4.Count)" $(if ($rc4.Count -gt 0) {'Yellow'} else {'Green'})
+    Write-Status "Citrix-Systeme gefunden" "$((SafeCount $results))" $(if ((SafeCount $results) -gt 0) {'Cyan'} else {'DarkGray'})
+    $rc4 = @($results | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+    Write-Status "davon mit RC4/DES im Attribut" "$((SafeCount $rc4))" $(if ((SafeCount $rc4) -gt 0) {'Yellow'} else {'Green'})
     return $results
 }
 
@@ -231,7 +240,7 @@ function Get-IgelDevices {
         }
     }
 
-    Write-Status "Igel/Thin Clients gefunden" "$($results.Count)" $(if ($results.Count -gt 0) {'Cyan'} else {'DarkGray'})
+    Write-Status "Igel/Thin Clients gefunden" "$((SafeCount $results))" $(if ((SafeCount $results) -gt 0) {'Cyan'} else {'DarkGray'})
     return $results
 }
 
@@ -293,7 +302,7 @@ function Get-NonWindowsDevices {
         }
     }
 
-    Write-Status "Non-Windows Geraete" "$($results.Count)" $(if ($results.Count -gt 0) {'Cyan'} else {'DarkGray'})
+    Write-Status "Non-Windows Geraete" "$((SafeCount $results))" $(if ((SafeCount $results) -gt 0) {'Cyan'} else {'DarkGray'})
     $byRole = $results | Group-Object Role
     foreach ($g in $byRole) { Write-Status "  $($g.Name)" "$($g.Count)" 'DarkGray' }
     return $results
@@ -359,12 +368,12 @@ function Get-DelegationAccounts {
             }
     } catch {}
 
-    Write-Status "Delegation-Accounts" "$($results.Count)" $(if ($results.Count -gt 0) {'Cyan'} else {'DarkGray'})
-    $rc4 = $results | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') }
-    Write-Status "davon mit RC4/DES" "$($rc4.Count)" $(if ($rc4.Count -gt 0) {'Red'} else {'Green'})
-    $unconst = $results | Where-Object { $_.DelegationType -eq 'Unconstrained' }
-    if ($unconst.Count -gt 0) {
-        Write-Status "UNCONSTRAINED Delegation (!)" "$($unconst.Count)" 'Red'
+    Write-Status "Delegation-Accounts" "$((SafeCount $results))" $(if ((SafeCount $results) -gt 0) {'Cyan'} else {'DarkGray'})
+    $rc4 = @($results | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+    Write-Status "davon mit RC4/DES" "$((SafeCount $rc4))" $(if ((SafeCount $rc4) -gt 0) {'Red'} else {'Green'})
+    $unconst = @($results | Where-Object { $_.DelegationType -eq 'Unconstrained' })
+    if ((SafeCount $unconst) -gt 0) {
+        Write-Status "UNCONSTRAINED Delegation (!)" "$((SafeCount $unconst))" 'Red'
     }
     return $results
 }
@@ -437,7 +446,7 @@ function Get-RC4TicketsBySystem {
     $xml4769 = '<QueryList><Query Id="0" Path="Security"><Select Path="Security">*[System[(EventID=4769) and TimeCreated[timediff(@SystemTime) &lt;= {0}]]] and *[EventData[Data[@Name=''TicketEncryptionType'']=''0x17'']]</Select></Query></QueryList>' -f $MsBack
     try {
         $raw = Get-WinEvent -FilterXml $xml4769 -MaxEvents $Max -EA Stop
-        Write-Host " $($raw.Count)" -ForegroundColor $(if ($raw.Count -gt 0) {'Red'} else {'Green'})
+        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $svc = Get-XmlField $x 'ServiceName'
@@ -462,7 +471,7 @@ function Get-RC4TicketsBySystem {
     $xml4770 = '<QueryList><Query Id="0" Path="Security"><Select Path="Security">*[System[(EventID=4770) and TimeCreated[timediff(@SystemTime) &lt;= {0}]]] and *[EventData[Data[@Name=''TicketEncryptionType'']=''0x17'']]</Select></Query></QueryList>' -f $MsBack
     try {
         $raw = Get-WinEvent -FilterXml $xml4770 -MaxEvents $Max -EA Stop
-        Write-Host " $($raw.Count)" -ForegroundColor $(if ($raw.Count -gt 0) {'Red'} else {'Green'})
+        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $allEvents += [PSCustomObject]@{
@@ -485,7 +494,7 @@ function Get-RC4TicketsBySystem {
     $preAuthFails = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4771 -MaxEvents $Max -EA Stop
-        Write-Host " $($raw.Count)" -ForegroundColor $(if ($raw.Count -gt 50) {'Red'} elseif ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 50) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $preAuthFails += [PSCustomObject]@{
@@ -508,7 +517,7 @@ function Get-RC4TicketsBySystem {
     $logonFails = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4625 -MaxEvents $Max -EA Stop
-        Write-Host " $($raw.Count)" -ForegroundColor $(if ($raw.Count -gt 100) {'Red'} elseif ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 100) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $logonFails += [PSCustomObject]@{
@@ -532,7 +541,7 @@ function Get-RC4TicketsBySystem {
     $lockouts = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4740 -MaxEvents $Max -EA Stop
-        Write-Host " $($raw.Count)" -ForegroundColor $(if ($raw.Count -gt 20) {'Red'} elseif ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 20) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $lockouts += [PSCustomObject]@{
@@ -568,8 +577,8 @@ function Get-RC4TicketsBySystem {
         }
     }
 
-    if ($correlated.Count -gt 0) {
-        Write-Status "Korrelierte Lockouts (120s)" "$($correlated.Count)" 'Red'
+    if ((SafeCount $correlated) -gt 0) {
+        Write-Status "Korrelierte Lockouts (120s)" "$((SafeCount $correlated))" 'Red'
         foreach ($co in ($correlated | Select-Object -First 5)) {
             Write-Host "    $($co.Account.PadRight(25)) Kerb: $($co.KerbFailTime.ToString('HH:mm:ss')) → Lock: $($co.LockoutTime.ToString('HH:mm:ss')) ($($co.DeltaSeconds)s)" -ForegroundColor Red
         }
@@ -578,7 +587,7 @@ function Get-RC4TicketsBySystem {
     }
 
     # --- Failed Logons by source (Citrix/Kemp/Gateway identification) ---
-    if ($logonFails.Count -gt 0) {
+    if ((SafeCount $logonFails) -gt 0) {
         Write-Host "`n  --- Top Quellen fehlgeschlagener Anmeldungen ---" -ForegroundColor Cyan
         $logonFails | Group-Object Workstation | Sort-Object Count -Descending | Select-Object -First 10 |
             ForEach-Object { Write-Status "  $($_.Name)" "$($_.Count)" 'Yellow' }
@@ -619,7 +628,7 @@ function Export-ExcelReport {
 
     if ($hasExcel) {
         # Citrix
-        if ($Discovery.Citrix.Count -gt 0) {
+        if ((SafeCount $Discovery.Citrix) -gt 0) {
             $Discovery.Citrix | Export-Excel -Path $xlPath -WorksheetName 'Citrix' -AutoSize -FreezeTopRow -BoldTopRow -ConditionalText $(
                 New-ConditionalText 'RC4_ONLY' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                 New-ConditionalText 'RC4_AES' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
@@ -629,14 +638,14 @@ function Export-ExcelReport {
         }
 
         # Igel
-        if ($Discovery.Igel.Count -gt 0) {
+        if ((SafeCount $Discovery.Igel) -gt 0) {
             $Discovery.Igel | Export-Excel -Path $xlPath -WorksheetName 'Igel' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
                 New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
             )
         }
 
         # Non-Windows
-        if ($Discovery.NonWindows.Count -gt 0) {
+        if ((SafeCount $Discovery.NonWindows) -gt 0) {
             $Discovery.NonWindows | Export-Excel -Path $xlPath -WorksheetName 'NonWindows' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
                 New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                 New-ConditionalText 'Linux' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
@@ -644,7 +653,7 @@ function Export-ExcelReport {
         }
 
         # Delegation
-        if ($Discovery.Delegation.Count -gt 0) {
+        if ((SafeCount $Discovery.Delegation) -gt 0) {
             $Discovery.Delegation | Export-Excel -Path $xlPath -WorksheetName 'Delegation' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
                 New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                 New-ConditionalText 'Unconstrained' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
@@ -656,15 +665,15 @@ function Export-ExcelReport {
 
         # Events (if present)
         if ($Events) {
-            if ($Events.RC4Tickets.Count -gt 0) {
+            if ((SafeCount $Events.RC4Tickets) -gt 0) {
                 $Events.RC4Tickets | Export-Excel -Path $xlPath -WorksheetName 'RC4_Tickets' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
                     New-ConditionalText 'True' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                 )
             }
-            if ($Events.Correlated.Count -gt 0) {
+            if ((SafeCount $Events.Correlated) -gt 0) {
                 $Events.Correlated | Export-Excel -Path $xlPath -WorksheetName 'Korrelation' -AutoSize -FreezeTopRow -BoldTopRow -Append
             }
-            if ($Events.LogonFails.Count -gt 0) {
+            if ((SafeCount $Events.LogonFails) -gt 0) {
                 $Events.LogonFails | Select-Object -First 500 | Export-Excel -Path $xlPath -WorksheetName 'LogonFails' -AutoSize -FreezeTopRow -BoldTopRow -Append
             }
         }
@@ -675,7 +684,7 @@ function Export-ExcelReport {
     # CSV fallback / additional
     $csvFiles = @()
     foreach ($key in @('Citrix','Igel','NonWindows','Delegation')) {
-        if ($Discovery[$key].Count -gt 0) {
+        if ((SafeCount $Discovery[$key]) -gt 0) {
             $p = Export-ToCsv $Discovery[$key] $key
             if ($p) { $csvFiles += $p; Write-Host "  CSV          : $p" -ForegroundColor Green }
         }
@@ -685,7 +694,7 @@ function Export-ExcelReport {
 
     if ($Events) {
         foreach ($key in @('RC4Tickets','PreAuthFails','LogonFails','Lockouts','Correlated')) {
-            if ($Events[$key].Count -gt 0) {
+            if ((SafeCount $Events[$key]) -gt 0) {
                 $p = Export-ToCsv $Events[$key] $key
                 if ($p) { $csvFiles += $p }
             }
@@ -760,12 +769,12 @@ $discovery = @{
 # Summary
 Write-Host "`n=== DISCOVERY ZUSAMMENFASSUNG ===" -ForegroundColor Cyan
 $allSystems = @() + $citrix + $igel + $nonwin
-$rc4Risk = $allSystems | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') }
-$delegRC4 = $deleg | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') }
+$rc4Risk = @($allSystems | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+$delegRC4 = @($deleg | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
 
-Write-Status "Systeme gesamt" "$($allSystems.Count)"
-Write-Status "davon mit RC4/DES" "$($rc4Risk.Count)" $(if ($rc4Risk.Count -gt 0) {'Red'} else {'Green'})
-Write-Status "Delegation-Accounts mit RC4/DES" "$($delegRC4.Count)" $(if ($delegRC4.Count -gt 0) {'Red'} else {'Green'})
+Write-Status "Systeme gesamt" "$((SafeCount $allSystems))"
+Write-Status "davon mit RC4/DES" "$((SafeCount $rc4Risk))" $(if ((SafeCount $rc4Risk) -gt 0) {'Red'} else {'Green'})
+Write-Status "Delegation-Accounts mit RC4/DES" "$((SafeCount $delegRC4))" $(if ((SafeCount $delegRC4) -gt 0) {'Red'} else {'Green'})
 
 # Phase 2: Events
 $events = $null
