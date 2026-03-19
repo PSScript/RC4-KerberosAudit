@@ -130,6 +130,65 @@ function SafeCount {
     return 1
 }
 
+function Get-Bewertung {
+    param([string]$EncCategory, [string]$Role, $PasswordLastSet)
+    $pwAge = if ($PasswordLastSet) {
+        [math]::Round(((Get-Date) - $PasswordLastSet).TotalDays)
+    } else { -1 }
+
+    $encText = switch ($EncCategory) {
+        'RC4_ONLY'    { 'Nur RC4 — kann kein AES. Wenn ein Server 2025 DC oder das April-2026-Update aktiv ist, schlaegt die Authentifizierung fehl.' }
+        'RC4_AES'     { 'RC4 und AES erlaubt. Der KDC kann RC4 waehlen, insbesondere bei Constrained Delegation. Ziel: auf AES-only (Wert 24) setzen.' }
+        'DES_PRESENT' { 'DES im Attribut — seit 2008 als unsicher eingestuft. Sofort auf AES-only aendern.' }
+        'NOT_SET'     { 'Wert nicht gesetzt (0/NULL) — folgt dem Domain-Default. Ab April 2026 wird der Default auf AES-only geaendert. Bis dahin kann der KDC RC4 waehlen.' }
+        'AES_ONLY'    { 'Nur AES — Zielzustand. Keine Aenderung noetig.' }
+        default       { 'Unbekannter Wert — manuell pruefen.' }
+    }
+
+    $roleText = switch -Wildcard ($Role) {
+        'Citrix-StoreFront' { 'StoreFront ist der erste Hop nach dem Benutzer. Ein RC4-Ticket hier betrifft alle Citrix-Sessions.' }
+        'Citrix-DDC'        { 'Der Delivery Controller brokert Sessions per Kerberos. RC4 hier kann Session-Starts sporadisch stoeren.' }
+        'Citrix-VDA'        { 'VDA hostet die Benutzersitzung. RC4 betrifft den Zugriff auf Ressourcen innerhalb der Session (OWA, Shares).' }
+        'NetScaler'         { 'NetScaler/ADC verwendet Constrained Delegation (S4U2Proxy). Die Encryption des delegierten Tickets haengt von diesem Account ab, nicht vom Benutzer.' }
+        'Citrix-ServiceAccount' { 'Citrix Service Account mit SPN. Wenn RC4 im Attribut steht, kann der KDC RC4-Tickets fuer Citrix-Dienste ausstellen.' }
+        'Igel'              { 'Igel Thin Client. Alte Firmware kann RC4 als Default in /etc/krb5.conf haben. Ueber UMS zentral auf AES umstellen.' }
+        'Linux'             { 'Linux-System. Kerberos-Verhalten abhaengig von krb5.conf und Samba-Version. Ab Samba 4.13 AES unterstuetzt.' }
+        'VMware*'           { 'VMware-System. vCenter AD-Integration und SSO Kerberos pruefen.' }
+        'macOS'             { 'macOS 10.7+ unterstuetzt AES — in der Regel unproblematisch.' }
+        default             { '' }
+    }
+
+    $pwText = ''
+    if ($pwAge -gt 365) {
+        $pwText = "Kennwort seit $pwAge Tagen nicht geaendert. AES-Keys werden erst bei Kennwortwechsel generiert — moeglicherweise keine AES-Keys vorhanden."
+    }
+    elseif ($pwAge -gt 180) {
+        $pwText = "Kennwort $pwAge Tage alt."
+    }
+
+    $parts = @($encText)
+    if ($roleText) { $parts += $roleText }
+    if ($pwText) { $parts += $pwText }
+    return ($parts -join ' ')
+}
+
+function Get-DelegationBewertung {
+    param([string]$EncCategory, [string]$DelegationType, [string]$DelegateTo)
+    $base = Get-Bewertung -EncCategory $EncCategory -Role 'Delegation' -PasswordLastSet $null
+
+    $delegText = switch ($DelegationType) {
+        'Unconstrained' { 'ACHTUNG: Unconstrained Delegation — dieser Account kann Tickets fuer JEDEN Dienst anfordern. Sicherheitsrisiko unabhaengig von RC4. Auf Constrained Delegation umstellen.' }
+        'Constrained'   {
+            $targets = ($DelegateTo -split ';' | ForEach-Object { $_.Trim() } | Select-Object -First 3) -join ', '
+            "Constrained Delegation fuer: $targets. Die Encryption des delegierten Tickets haengt von diesem Account ab. Bei RC4 im Attribut kann der KDC RC4-Tickets fuer das Backend ausstellen."
+        }
+        default { '' }
+    }
+
+    if ($delegText) { return "$base $delegText" }
+    return $base
+}
+
 function Export-ToCsv {
     param([array]$Data, [string]$Name)
     if ((SafeCount $Data) -eq 0) { return $null }
@@ -179,6 +238,7 @@ function Get-CitrixInfrastructure {
             Name = $comp.Name; Role = $role; OS = $comp.OperatingSystem
             EncValue = $enc; EncCategory = $cat; PasswordLastSet = $comp.PasswordLastSet
             SPNs = ($comp.ServicePrincipalName -join '; ')
+            Bewertung = (Get-Bewertung -EncCategory $cat -Role $role -PasswordLastSet $comp.PasswordLastSet)
             ADAttribute = 'msDS-SupportedEncryptionTypes'
             FixCmd = "Set-ADComputer '$($comp.Name)' -KerberosEncryptionType AES128,AES256"
         }
@@ -195,6 +255,7 @@ function Get-CitrixInfrastructure {
                     EncValue = $enc; EncCategory = (Get-EncCategory $enc)
                     PasswordLastSet = $_.PasswordLastSet
                     SPNs = ($_.ServicePrincipalName -join '; ')
+                    Bewertung = (Get-Bewertung -EncCategory (Get-EncCategory $enc) -Role 'Citrix-ServiceAccount' -PasswordLastSet $_.PasswordLastSet)
                     ADAttribute = 'msDS-SupportedEncryptionTypes'
                     FixCmd = "Set-ADUser '$($_.Name)' -KerberosEncryptionType AES128,AES256"
                 }
@@ -243,6 +304,7 @@ function Get-IgelDevices {
             EncValue = $enc; EncCategory = (Get-EncCategory $enc)
             PasswordLastSet = $comp.PasswordLastSet
             Description = $comp.Description
+            Bewertung = (Get-Bewertung -EncCategory (Get-EncCategory $enc) -Role 'Igel' -PasswordLastSet $comp.PasswordLastSet)
             RiskNote = 'Pruefen: /etc/krb5.conf default_tgs_enctypes auf dem Geraet'
         }
     }
@@ -295,10 +357,12 @@ function Get-NonWindowsDevices {
 
     foreach ($item in $found.Values) {
         $comp = $item.Comp; $enc = $comp.'msDS-SupportedEncryptionTypes'
+        $encCat = Get-EncCategory $enc
         $results += [PSCustomObject]@{
             Name = $comp.Name; Role = $item.Role; OS = $comp.OperatingSystem
-            EncValue = $enc; EncCategory = (Get-EncCategory $enc)
+            EncValue = $enc; EncCategory = $encCat
             PasswordLastSet = $comp.PasswordLastSet
+            Bewertung = (Get-Bewertung -EncCategory $encCat -Role $item.Role -PasswordLastSet $comp.PasswordLastSet)
             RiskNote = switch ($item.Role) {
                 'Linux'       { 'Pruefen: /etc/krb5.conf + Samba-Version + Keytab' }
                 'VMware'      { 'Pruefen: vCenter AD-Integration und SSO Kerberos' }
@@ -327,12 +391,16 @@ function Get-DelegationAccounts {
             -Properties msDS-SupportedEncryptionTypes, msDS-AllowedToDelegateTo, OperatingSystem, PasswordLastSet, TrustedForDelegation -EA SilentlyContinue |
             ForEach-Object {
                 $enc = $_.'msDS-SupportedEncryptionTypes'
+                $encCat = Get-EncCategory $enc
+                $delType = if ($_.TrustedForDelegation) {'Unconstrained'} else {'Constrained'}
+                $delTo = ($_.'msDS-AllowedToDelegateTo' -join '; ')
                 $results += [PSCustomObject]@{
                     Name = $_.Name; Type = 'Computer'; OS = $_.OperatingSystem
-                    EncValue = $enc; EncCategory = (Get-EncCategory $enc)
-                    DelegationType = if ($_.TrustedForDelegation) {'Unconstrained'} else {'Constrained'}
-                    DelegateTo = ($_.'msDS-AllowedToDelegateTo' -join '; ')
+                    EncValue = $enc; EncCategory = $encCat
+                    DelegationType = $delType
+                    DelegateTo = $delTo
                     PasswordLastSet = $_.PasswordLastSet
+                    Bewertung = (Get-DelegationBewertung -EncCategory $encCat -DelegationType $delType -DelegateTo $delTo)
                     FixCmd = "Set-ADComputer '$($_.Name)' -KerberosEncryptionType AES128,AES256"
                 }
             }
@@ -344,12 +412,16 @@ function Get-DelegationAccounts {
             -Properties msDS-SupportedEncryptionTypes, msDS-AllowedToDelegateTo, PasswordLastSet, TrustedForDelegation -EA SilentlyContinue |
             ForEach-Object {
                 $enc = $_.'msDS-SupportedEncryptionTypes'
+                $encCat = Get-EncCategory $enc
+                $delType = if ($_.TrustedForDelegation) {'Unconstrained'} else {'Constrained'}
+                $delTo = ($_.'msDS-AllowedToDelegateTo' -join '; ')
                 $results += [PSCustomObject]@{
                     Name = $_.SamAccountName; Type = 'ServiceAccount'; OS = 'N/A'
-                    EncValue = $enc; EncCategory = (Get-EncCategory $enc)
-                    DelegationType = if ($_.TrustedForDelegation) {'Unconstrained'} else {'Constrained'}
-                    DelegateTo = ($_.'msDS-AllowedToDelegateTo' -join '; ')
+                    EncValue = $enc; EncCategory = $encCat
+                    DelegationType = $delType
+                    DelegateTo = $delTo
                     PasswordLastSet = $_.PasswordLastSet
+                    Bewertung = (Get-DelegationBewertung -EncCategory $encCat -DelegationType $delType -DelegateTo $delTo)
                     FixCmd = "Set-ADUser '$($_.SamAccountName)' -KerberosEncryptionType AES128,AES256"
                 }
             }
@@ -363,12 +435,14 @@ function Get-DelegationAccounts {
             ForEach-Object {
                 $enc = $_.'msDS-SupportedEncryptionTypes'
                 if (-not ($results | Where-Object { $_.Name -eq $_.Name })) {
+                    $encCat = Get-EncCategory $enc
                     $results += [PSCustomObject]@{
                         Name = $_.Name; Type = 'Computer'; OS = $_.OperatingSystem
-                        EncValue = $enc; EncCategory = (Get-EncCategory $enc)
+                        EncValue = $enc; EncCategory = $encCat
                         DelegationType = 'Unconstrained'
                         DelegateTo = 'ANY (Unconstrained!)'
                         PasswordLastSet = $_.PasswordLastSet
+                        Bewertung = (Get-DelegationBewertung -EncCategory $encCat -DelegationType 'Unconstrained' -DelegateTo 'ANY')
                         FixCmd = "Set-ADComputer '$($_.Name)' -KerberosEncryptionType AES128,AES256"
                     }
                 }
@@ -408,23 +482,28 @@ function Get-KerberosGPOPolicy {
     }
 
     if ($null -eq $value) {
-        $result.Recommendation = 'Nicht konfiguriert — folgt OS-Default'
+        $result.Recommendation = 'Nicht konfiguriert — folgt OS-Default. Ab April 2026 aendert sich der Default auf AES-only (CVE-2026-20833).'
+        $result | Add-Member -NotePropertyName 'Bewertung' -NotePropertyValue 'GPO ist nicht explizit konfiguriert. Der Domain Controller verwendet den OS-Default. Aktuell erlaubt das RC4. Ab April 2026 wird der Default durch ein Windows Update auf AES-only geaendert — alle Accounts mit Wert 0 (NOT SET) werden dann als AES-only behandelt.'
         Write-Status "Kerberos GPO" "NOT SET (OS-Default)" 'DarkGray'
     }
     elseif ($value -eq 2147483647) {
         $result.Recommendation = 'ALLES erlaubt inkl. DES — Ziel: 2147483644 (ohne DES) oder 2147483640 (AES-only)'
+        $result | Add-Member -NotePropertyName 'Bewertung' -NotePropertyValue 'GPO erlaubt alle Verschluesselungstypen einschliesslich DES. DES ist seit 2008 als unsicher eingestuft. Empfehlung: sofort auf 2147483644 (DES entfernen, RC4 im Uebergang belassen) oder direkt auf 2147483640 (AES-only) wenn alle Accounts bereinigt sind.'
         Write-Status "Kerberos GPO" "$value (DES+RC4+AES — zu offen)" 'Red'
     }
     elseif ($value -band 0x3) {
-        $result.Recommendation = 'DES noch erlaubt — DES seit Jahrzehnten gebrochen'
+        $result.Recommendation = 'DES noch erlaubt — DES seit Jahrzehnten gebrochen. Sofort entfernen.'
+        $result | Add-Member -NotePropertyName 'Bewertung' -NotePropertyValue 'GPO erlaubt DES-Verschluesselung. DES ist kryptographisch gebrochen und stellt ein Sicherheitsrisiko dar. Empfehlung: GPO-Wert auf 2147483644 (DES entfernen) oder 2147483640 (AES-only) aendern.'
         Write-Status "Kerberos GPO" "$value (DES erlaubt)" 'Red'
     }
     elseif ($value -band 0x4) {
-        $result.Recommendation = 'RC4 noch erlaubt — Uebergang: OK, Ziel: 2147483640 (AES-only)'
+        $result.Recommendation = 'RC4 noch erlaubt — Uebergang: OK, Ziel: 2147483640 (AES-only). Deadline: April 2026.'
+        $result | Add-Member -NotePropertyName 'Bewertung' -NotePropertyValue 'GPO erlaubt RC4 und AES. Das ist ein akzeptabler Uebergangszustand. RC4 sollte erst entfernt werden (Wert 2147483640) wenn alle Computer- und Service-Accounts auf AES-only (Wert 24) umgestellt und deren Kennwoerter rotiert sind. Deadline: vor April 2026.'
         Write-Status "Kerberos GPO" "$value (RC4+AES)" 'Yellow'
     }
     else {
-        $result.Recommendation = 'AES-only — Zielzustand'
+        $result.Recommendation = 'AES-only — Zielzustand erreicht.'
+        $result | Add-Member -NotePropertyName 'Bewertung' -NotePropertyValue 'GPO erlaubt nur AES-Verschluesselung. Zielzustand erreicht. Keine Aenderung noetig.'
         Write-Status "Kerberos GPO" "$value (AES-only)" 'Green'
     }
 
@@ -875,16 +954,127 @@ if ($SendMail -and $MailTo -and $SmtpServer) {
     Send-Report -ZipPath $zip -To $MailTo -From $MailFrom -Smtp $SmtpServer
 }
 
-# Final summary
+# Final summary with German interpretation
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  RC4 Environment Discovery abgeschlossen." -ForegroundColor Cyan
-Write-Host "  Report : $reportDir" -ForegroundColor White
-if ($zip) { Write-Host "  ZIP    : $zip" -ForegroundColor White }
+Write-Host "  Domaene : $domainFQDN" -ForegroundColor White
+Write-Host "  Report  : $reportDir" -ForegroundColor White
+if ($zip) { Write-Host "  ZIP     : $zip" -ForegroundColor White }
+
+# --- German plaintext interpretation ---
+Write-Host ""
+Write-Host "  --- BEWERTUNG ---" -ForegroundColor Yellow
+
+# GPO
+if ($gpo.Value -eq 2147483647) {
+    Write-Host "  [GPO] KRITISCH: Die Kerberos-GPO erlaubt alle Verschluesselungstypen" -ForegroundColor Red
+    Write-Host "         einschliesslich DES. DES ist seit 2008 gebrochen." -ForegroundColor Red
+    Write-Host "         Empfehlung: GPO sofort auf 2147483644 (DES entfernen) aendern." -ForegroundColor Red
+}
+elseif ($gpo.HasDES) {
+    Write-Host "  [GPO] KRITISCH: DES noch erlaubt. Sofort entfernen." -ForegroundColor Red
+}
+elseif ($gpo.HasRC4) {
+    Write-Host "  [GPO] Uebergang: RC4 noch erlaubt (Wert $($gpo.Value))." -ForegroundColor Yellow
+    Write-Host "         Das ist akzeptabel solange die Account-Bereinigung laeuft." -ForegroundColor Yellow
+    Write-Host "         Ziel: 2147483640 (AES-only) sobald alle Accounts bereinigt sind." -ForegroundColor Yellow
+}
+elseif ($gpo.Value) {
+    Write-Host "  [GPO] OK: AES-only. Zielzustand erreicht." -ForegroundColor Green
+}
+else {
+    Write-Host "  [GPO] Nicht konfiguriert — folgt OS-Default." -ForegroundColor DarkGray
+    Write-Host "         Ab April 2026 (CVE-2026-20833) aendert sich der Default auf AES-only." -ForegroundColor DarkGray
+}
+
+# RC4 Systems
+if ((SafeCount $rc4Risk) -gt 0) {
+    Write-Host ""
+    Write-Host "  [SYSTEME] $((SafeCount $rc4Risk)) Systeme haben RC4 oder DES im Kerberos-Attribut:" -ForegroundColor Yellow
+    foreach ($sys in $rc4Risk) {
+        $color = if ($sys.EncCategory -eq 'RC4_ONLY') {'Red'} else {'Yellow'}
+        Write-Host "    $($sys.Name.PadRight(25)) $($sys.EncCategory.PadRight(12)) $($sys.Role)" -ForegroundColor $color
+    }
+    Write-Host "         Diese Systeme koennen vom KDC RC4-Tickets erhalten." -ForegroundColor Yellow
+    Write-Host "         Bei Server 2025 DCs oder nach dem April-2026-Update" -ForegroundColor Yellow
+    Write-Host "         schlagen Authentifizierungen sporadisch fehl." -ForegroundColor Yellow
+}
+else {
+    Write-Host ""
+    Write-Host "  [SYSTEME] Keine Systeme mit RC4/DES im Kerberos-Attribut gefunden." -ForegroundColor Green
+}
+
+# Delegation
+if ((SafeCount $delegRC4) -gt 0) {
+    Write-Host ""
+    Write-Host "  [DELEGATION] $((SafeCount $delegRC4)) Delegation-Accounts mit RC4/DES:" -ForegroundColor Red
+    foreach ($d in $delegRC4) {
+        Write-Host "    $($d.Name.PadRight(25)) $($d.EncCategory.PadRight(12)) $($d.DelegationType) -> $($d.DelegateTo.Substring(0, [Math]::Min(50, $d.DelegateTo.Length)))" -ForegroundColor Red
+    }
+    Write-Host "         Delegation-Accounts sind besonders kritisch weil die" -ForegroundColor Red
+    Write-Host "         Encryption des delegierten Tickets von DIESEM Account" -ForegroundColor Red
+    Write-Host "         abhaengt, nicht vom Benutzer." -ForegroundColor Red
+}
+
+# Events interpretation
+if ($events) {
+    Write-Host ""
+    $rc4Count = SafeCount $events.RC4Tickets
+    $preAuthCount = SafeCount $events.PreAuthFails
+    $lockoutCount = SafeCount $events.Lockouts
+    $correlCount = SafeCount $events.Correlated
+
+    if ($rc4Count -gt 0) {
+        Write-Host "  [TICKETS] $rc4Count RC4-verschluesselte Service Tickets in den letzten $Hours Stunden." -ForegroundColor Red
+        Write-Host "         Der KDC stellt aktiv RC4-Tickets aus. Diese werden von" -ForegroundColor Red
+        Write-Host "         Server 2025 Systemen abgelehnt." -ForegroundColor Red
+    }
+    else {
+        Write-Host "  [TICKETS] Keine RC4 Service Tickets in den letzten $Hours Stunden." -ForegroundColor Green
+        Write-Host "         Der KDC waehlt aktuell AES. Das kann sich aendern wenn" -ForegroundColor DarkGray
+        Write-Host "         ein 2025 DC oder Constrained Delegation ins Spiel kommt." -ForegroundColor DarkGray
+    }
+
+    if ($correlCount -gt 0) {
+        Write-Host ""
+        Write-Host "  [KORRELATION] $correlCount Kontosperrungen innerhalb 120 Sekunden" -ForegroundColor Red
+        Write-Host "         nach einem Kerberos Pre-Auth Fehler (Fallback-Kette):" -ForegroundColor Red
+        Write-Host "         Kerberos schlaegt fehl -> System versucht NTLM ->" -ForegroundColor Red
+        Write-Host "         altes/falsches Kennwort -> Kontosperrung." -ForegroundColor Red
+        Write-Host ""
+        $correlAccounts = @($events.Correlated | Group-Object Account | Sort-Object Count -Descending)
+        foreach ($ca in $correlAccounts | Select-Object -First 5) {
+            Write-Host "    $($ca.Name.PadRight(30)) $($ca.Count)x gesperrt durch Fallback-Kette" -ForegroundColor Red
+        }
+    }
+    elseif ($lockoutCount -gt 0) {
+        Write-Host ""
+        Write-Host "  [LOCKOUTS] $lockoutCount Kontosperrungen, aber keine Korrelation" -ForegroundColor Yellow
+        Write-Host "         mit Kerberos-Fehlern. Ursache vermutlich nicht RC4-bedingt." -ForegroundColor Yellow
+    }
+
+    if ($preAuthCount -gt 50) {
+        Write-Host ""
+        Write-Host "  [PRE-AUTH] $preAuthCount Pre-Auth Fehler (Event 4771) in $Hours Stunden." -ForegroundColor Yellow
+        Write-Host "         Erhoehte Anzahl. Haeufige Ursachen: gespeicherte alte" -ForegroundColor Yellow
+        Write-Host "         Kennwoerter, Dienste mit falschem Passwort, Kerberos-Fallback." -ForegroundColor Yellow
+    }
+}
+
+Write-Host ""
+Write-Host "  --- NAECHSTE SCHRITTE ---" -ForegroundColor Cyan
+Write-Host "  1. Alle Systeme mit RC4_ONLY oder DES_PRESENT sofort auf AES-only setzen" -ForegroundColor White
+Write-Host "  2. Systeme mit RC4_AES auf AES-only umstellen (Wert 24)" -ForegroundColor White
+Write-Host "  3. Delegation-Accounts pruefen und Keytabs mit AES neu erstellen" -ForegroundColor White
+Write-Host "  4. KRBTGT-Kennwort pruefen: Get-ADUser krbtgt -Prop PasswordLastSet" -ForegroundColor White
+Write-Host "  5. Prove-RC4Usage.ps1 ausfuehren um aktive RC4-Tickets zu finden" -ForegroundColor White
+Write-Host "  6. GPO auf 2147483640 (AES-only) aendern wenn alle Accounts bereinigt" -ForegroundColor White
+Write-Host "  7. Deadline: April 2026 (CVE-2026-20833) — neuer Default AES-only" -ForegroundColor White
 Write-Host ""
 Write-Host "  Referenzen:" -ForegroundColor DarkGray
 Write-Host "  - https://learn.microsoft.com/en-us/windows-server/security/kerberos/detect-remediate-rc4-kerberos" -ForegroundColor DarkGray
-Write-Host "  - https://borncity.com/blog/2025/09/27/windows-server-2025-als-dc-finger-weg-bei-gemischten-umgebungen-rc4-problem/" -ForegroundColor DarkGray
+Write-Host "  - https://www.msxfaq.de/windows/kerberos/kerberos_rc4_abschaltung.htm" -ForegroundColor DarkGray
 Write-Host "  - https://www.microsoft.com/en-us/windows-server/blog/2025/12/03/beyond-rc4-for-windows-authentication/" -ForegroundColor DarkGray
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
