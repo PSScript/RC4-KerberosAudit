@@ -144,6 +144,69 @@ Das Skript erkennt Lockouts (4740) die innerhalb von 60 Sekunden nach einem Kerb
 | `RC4_Proof_UnsignedLDAP_[ts].csv` | LDAP-Clients mit unsigniertem Bind |
 | `RC4_Proof_URGENT_[ts].csv` | Zusammengefasste RC4-Nutzer mit Fix-Befehlen |
 
+---
+
+### Discover-RC4Environment.ps1
+
+Erkennt RC4-anfällige Systeme in heterogenen Umgebungen und korreliert Kerberos-Events mit Anmeldefehlern. Ergänzung zu den beiden Audit-Skripten, Fokus auf Citrix, Igel, VMware, Linux und Delegation.
+
+**Vier Phasen:**
+
+| Phase | Was |
+|---|---|
+| 1. AD-Discovery | Citrix (StoreFront/DDC/VDA/NetScaler), Igel, Non-Windows (Linux/macOS/VMware/Appliances), Delegation-Accounts |
+| 2. GPO-Analyse | Kerberos Encryption Policy auf dem DC |
+| 3. Event-Korrelation | RC4-Tickets (4769/4770) → Pre-Auth (4771) → Failed Logon (4625) → Lockout (4740), 120s-Fenster |
+| 4. Reporting | Excel mit Highlighting, CSVs pro Kategorie, ZIP, optionale E-Mail |
+
+**Parameter:**
+
+| Parameter | Standard | Beschreibung |
+|---|---|---|
+| `-Hours` | 24 | Event-Log Zeitraum |
+| `-MaxEvents` | 1000 | Max Events pro Abfrage |
+| `-ReportPath` | C:\Temp | Zielordner |
+| `-SkipEvents` | aus | Nur AD-Discovery, keine Event-Logs |
+| `-SendMail` | aus | ZIP per E-Mail versenden |
+| `-MailTo` | — | Empfänger |
+| `-SmtpServer` | — | SMTP-Server |
+
+**Aufruf:**
+
+```powershell
+# Standard: Discovery + Events der letzten 24h
+.\Discover-RC4Environment.ps1
+
+# Nur AD-Discovery, keine Events
+.\Discover-RC4Environment.ps1 -SkipEvents
+
+# 72 Stunden, mit E-Mail-Versand
+.\Discover-RC4Environment.ps1 -Hours 72 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
+```
+
+**Erzeugte Reports** (Ordner `RC4_Discovery_[timestamp]` + ZIP):
+
+| Datei / Sheet | Inhalt |
+|---|---|
+| Citrix | StoreFront, DDC, VDA, NetScaler, Service Accounts mit EncType + Fix |
+| Igel | Thin Clients mit EncType + Firmware-Hinweis |
+| NonWindows | Linux, macOS, VMware, Appliances mit Risiko-Bewertung |
+| Delegation | Constrained/Unconstrained Delegation mit DelegateTo-Zielen |
+| GPO_Policy | Aktuelle Kerberos GPO mit Empfehlung |
+| RC4_Tickets | RC4 Service Tickets mit System-Zuordnung |
+| Korrelation | Lockouts innerhalb 120s nach Kerberos-Fehler |
+| LogonFails | Fehlgeschlagene Anmeldungen mit Auth-Paket und Workstation |
+
+**Excel-Highlighting** (benötigt `ImportExcel`-Modul):
+
+- RC4_ONLY → Rot
+- RC4_AES → Gelb
+- AES_ONLY → Grün
+- Unconstrained Delegation → Rot
+- Ohne ImportExcel: automatischer CSV-Fallback
+
+**Voraussetzung:** `Install-Module ImportExcel -Scope CurrentUser` (optional, CSV funktioniert immer)
+
 ## Verschlüsselungstypen-Referenz
 
 | Wert | Bitmask | Bedeutung | Server 2025 Risiko |
