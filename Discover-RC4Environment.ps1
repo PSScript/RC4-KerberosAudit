@@ -97,9 +97,19 @@ function Get-EncLabel {
 
 function Get-XmlField {
     param([xml]$EventXml, [string]$FieldName)
-    $node = $EventXml.Event.EventData.Data | Where-Object { $_.Name -eq $FieldName }
-    if ($node) { return $node.'#text' }
-    return $null
+    try {
+        $node = $EventXml.Event.EventData.Data | Where-Object { $_.Name -eq $FieldName }
+        if ($null -eq $node) { return $null }
+        $val = $node.'#text'
+        if ($null -eq $val) { return $node.InnerText }
+        return $val
+    } catch { return $null }
+}
+
+function Format-EventCount {
+    param([int]$Count, [int]$Max)
+    if ($Count -ge $Max) { return "$Count+ (MaxEvents erreicht — es gibt vermutlich mehr)" }
+    return "$Count"
 }
 
 function Get-EncCategory {
@@ -532,7 +542,7 @@ function Get-RC4TicketsBySystem {
     $xml4769 = '<QueryList><Query Id="0" Path="Security"><Select Path="Security">*[System[(EventID=4769) and TimeCreated[timediff(@SystemTime) &lt;= {0}]]] and *[EventData[Data[@Name=''TicketEncryptionType'']=''0x17'']]</Select></Query></QueryList>' -f $MsBack
     try {
         $raw = Get-WinEvent -FilterXml $xml4769 -MaxEvents $Max -EA Stop
-        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
+        Write-Host " $(Format-EventCount (SafeCount $raw) $Max)" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $svc = Get-XmlField $x 'ServiceName'
@@ -557,7 +567,7 @@ function Get-RC4TicketsBySystem {
     $xml4770 = '<QueryList><Query Id="0" Path="Security"><Select Path="Security">*[System[(EventID=4770) and TimeCreated[timediff(@SystemTime) &lt;= {0}]]] and *[EventData[Data[@Name=''TicketEncryptionType'']=''0x17'']]</Select></Query></QueryList>' -f $MsBack
     try {
         $raw = Get-WinEvent -FilterXml $xml4770 -MaxEvents $Max -EA Stop
-        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
+        Write-Host " $(Format-EventCount (SafeCount $raw) $Max)" -ForegroundColor $(if ((SafeCount $raw) -gt 0) {'Red'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $allEvents += [PSCustomObject]@{
@@ -580,7 +590,7 @@ function Get-RC4TicketsBySystem {
     $preAuthFails = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4771 -MaxEvents $Max -EA Stop
-        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 50) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $(Format-EventCount (SafeCount $raw) $Max)" -ForegroundColor $(if ((SafeCount $raw) -gt 50) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $preAuthFails += [PSCustomObject]@{
@@ -603,7 +613,7 @@ function Get-RC4TicketsBySystem {
     $logonFails = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4625 -MaxEvents $Max -EA Stop
-        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 100) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $(Format-EventCount (SafeCount $raw) $Max)" -ForegroundColor $(if ((SafeCount $raw) -gt 100) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $logonFails += [PSCustomObject]@{
@@ -627,7 +637,7 @@ function Get-RC4TicketsBySystem {
     $lockouts = @()
     try {
         $raw = Get-WinEvent -FilterXml $xml4740 -MaxEvents $Max -EA Stop
-        Write-Host " $((SafeCount $raw))" -ForegroundColor $(if ((SafeCount $raw) -gt 20) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
+        Write-Host " $(Format-EventCount (SafeCount $raw) $Max)" -ForegroundColor $(if ((SafeCount $raw) -gt 20) {'Red'} elseif ((SafeCount $raw) -gt 0) {'Yellow'} else {'Green'})
         foreach ($evt in $raw) {
             $x = [xml]$evt.ToXml()
             $lockouts += [PSCustomObject]@{
