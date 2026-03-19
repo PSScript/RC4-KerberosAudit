@@ -46,7 +46,7 @@
     .\Discover-RC4Environment.ps1 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
 
 .NOTES
-    Version : 1.0
+    Version : 1.1
     Datum   : 2026-03
     Ref     : https://learn.microsoft.com/en-us/windows-server/security/kerberos/detect-remediate-rc4-kerberos
               https://borncity.com/blog/2025/09/27/windows-server-2025-als-dc-finger-weg-bei-gemischten-umgebungen-rc4-problem/
@@ -67,8 +67,15 @@ param(
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
-$reportDir = Join-Path $ReportPath "RC4_Discovery_$ts"
 $msBack = $Hours * 3600 * 1000
+
+# Domain name without TLD for filename
+$domainFQDN = $env:USERDNSDOMAIN
+if (-not $domainFQDN) {
+    try { $domainFQDN = (Get-ADDomain -EA Stop).DNSRoot } catch { $domainFQDN = 'UNKNOWN' }
+}
+$domainShort = ($domainFQDN -split '\.')[0]
+$reportDir = Join-Path $ReportPath "RC4_${domainShort}_${ts}"
 
 if (-not (Test-Path $reportDir)) { New-Item -Path $reportDir -ItemType Directory -Force | Out-Null }
 
@@ -624,57 +631,128 @@ function Export-ExcelReport {
         Write-Host "  Installieren: Install-Module ImportExcel -Scope CurrentUser" -ForegroundColor DarkGray
     }
 
-    $xlPath = Join-Path $Path "RC4_Discovery_Report.xlsx"
+    $xlPath = Join-Path $Path "RC4_${domainShort}_Report.xlsx"
+
+    # Standard conditional formatting rules
+    $ctRC4 = @(
+        (New-ConditionalText 'RC4_ONLY'    -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
+        (New-ConditionalText 'RC4_AES'     -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
+        (New-ConditionalText 'DES_PRESENT' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
+        (New-ConditionalText 'AES_ONLY'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
+        (New-ConditionalText 'NOT_SET'     -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
+    )
 
     if ($hasExcel) {
-        # Citrix
+        # --- Overview Tab (first) ---
+        $overviewData = @()
+        $overviewData += [PSCustomObject]@{
+            Bereich='Domaene'; Wert=$domainFQDN; Status='Info'
+            Hinweis="Domain Functional Level: $((Get-ADDomain -EA SilentlyContinue).DomainMode)"
+        }
+        $overviewData += [PSCustomObject]@{
+            Bereich='Server'; Wert=$env:COMPUTERNAME; Status='Info'; Hinweis="Audit-Host"
+        }
+        $overviewData += [PSCustomObject]@{
+            Bereich='Zeitraum'; Wert="Letzte $Hours Stunden"; Status='Info'; Hinweis=(Get-Date -Format 'yyyy-MM-dd HH:mm')
+        }
+        $overviewData += [PSCustomObject]@{
+            Bereich='Kerberos GPO'; Wert=$GPO.Value; Status=$(
+                if ($GPO.HasDES) {'KRITISCH'} elseif ($GPO.HasRC4) {'WARNUNG'} else {'OK'}
+            ); Hinweis=$GPO.Recommendation
+        }
+
+        # Category summaries
+        foreach ($key in @('Citrix','Igel','NonWindows','Delegation')) {
+            $items = @($Discovery[$key])
+            $rc4Items = @($items | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+            $total = SafeCount $items
+            $rc4Count = SafeCount $rc4Items
+            $status = if ($rc4Count -gt 0) {'WARNUNG'} elseif ($total -gt 0) {'OK'} else {'Leer'}
+            $overviewData += [PSCustomObject]@{
+                Bereich=$key; Wert="$total gefunden, $rc4Count mit RC4/DES"
+                Status=$status; Hinweis=''
+            }
+        }
+
+        # Event summaries
+        if ($Events) {
+            $overviewData += [PSCustomObject]@{
+                Bereich='RC4 Service Tickets'; Wert=(SafeCount $Events.RC4Tickets)
+                Status=$(if ((SafeCount $Events.RC4Tickets) -gt 0) {'KRITISCH'} else {'OK'})
+                Hinweis='Event 4769 mit EncType 0x17'
+            }
+            $overviewData += [PSCustomObject]@{
+                Bereich='Pre-Auth Fehler'; Wert=(SafeCount $Events.PreAuthFails)
+                Status=$(if ((SafeCount $Events.PreAuthFails) -gt 50) {'WARNUNG'} elseif ((SafeCount $Events.PreAuthFails) -gt 0) {'Info'} else {'OK'})
+                Hinweis='Event 4771'
+            }
+            $overviewData += [PSCustomObject]@{
+                Bereich='Failed Logons'; Wert=(SafeCount $Events.LogonFails)
+                Status=$(if ((SafeCount $Events.LogonFails) -gt 100) {'WARNUNG'} elseif ((SafeCount $Events.LogonFails) -gt 0) {'Info'} else {'OK'})
+                Hinweis='Event 4625'
+            }
+            $overviewData += [PSCustomObject]@{
+                Bereich='Account Lockouts'; Wert=(SafeCount $Events.Lockouts)
+                Status=$(if ((SafeCount $Events.Lockouts) -gt 10) {'KRITISCH'} elseif ((SafeCount $Events.Lockouts) -gt 0) {'WARNUNG'} else {'OK'})
+                Hinweis='Event 4740'
+            }
+            $overviewData += [PSCustomObject]@{
+                Bereich='Korrelierte Lockouts'; Wert=(SafeCount $Events.Correlated)
+                Status=$(if ((SafeCount $Events.Correlated) -gt 0) {'KRITISCH'} else {'OK'})
+                Hinweis='Kerberos-Fehler innerhalb 120s vor Lockout'
+            }
+        }
+
+        $overviewData | Export-Excel -Path $xlPath -WorksheetName 'Uebersicht' -AutoSize -FreezeTopRow -BoldTopRow -ConditionalText $(
+            New-ConditionalText 'KRITISCH' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+            New-ConditionalText 'WARNUNG'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+            New-ConditionalText 'OK'       -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+        )
+
+        # --- Data Tabs ---
         if ((SafeCount $Discovery.Citrix) -gt 0) {
-            $Discovery.Citrix | Export-Excel -Path $xlPath -WorksheetName 'Citrix' -AutoSize -FreezeTopRow -BoldTopRow -ConditionalText $(
-                New-ConditionalText 'RC4_ONLY' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
-                New-ConditionalText 'RC4_AES' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-                New-ConditionalText 'DES_PRESENT' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
-                New-ConditionalText 'AES_ONLY' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-            )
+            $Discovery.Citrix | Export-Excel -Path $xlPath -WorksheetName 'Citrix' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $ctRC4
         }
-
-        # Igel
         if ((SafeCount $Discovery.Igel) -gt 0) {
-            $Discovery.Igel | Export-Excel -Path $xlPath -WorksheetName 'Igel' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
-                New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-            )
+            $Discovery.Igel | Export-Excel -Path $xlPath -WorksheetName 'Igel' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $ctRC4
         }
-
-        # Non-Windows
         if ((SafeCount $Discovery.NonWindows) -gt 0) {
             $Discovery.NonWindows | Export-Excel -Path $xlPath -WorksheetName 'NonWindows' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
-                New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-                New-ConditionalText 'Linux' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
+                $ctRC4 + @(New-ConditionalText 'Linux' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C')
             )
         }
-
-        # Delegation
         if ((SafeCount $Discovery.Delegation) -gt 0) {
             $Discovery.Delegation | Export-Excel -Path $xlPath -WorksheetName 'Delegation' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
-                New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-                New-ConditionalText 'Unconstrained' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                $ctRC4 + @(New-ConditionalText 'Unconstrained' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
             )
         }
 
-        # GPO
         @($GPO) | Export-Excel -Path $xlPath -WorksheetName 'GPO_Policy' -AutoSize -FreezeTopRow -BoldTopRow -Append
 
-        # Events (if present)
+        # Event tabs
         if ($Events) {
             if ((SafeCount $Events.RC4Tickets) -gt 0) {
                 $Events.RC4Tickets | Export-Excel -Path $xlPath -WorksheetName 'RC4_Tickets' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
                     New-ConditionalText 'True' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                    New-ConditionalText 'RC4' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                 )
             }
+            if ((SafeCount $Events.PreAuthFails) -gt 0) {
+                $Events.PreAuthFails | Select-Object -First 500 | Export-Excel -Path $xlPath -WorksheetName 'PreAuth_Fehler' -AutoSize -FreezeTopRow -BoldTopRow -Append
+            }
             if ((SafeCount $Events.Correlated) -gt 0) {
-                $Events.Correlated | Export-Excel -Path $xlPath -WorksheetName 'Korrelation' -AutoSize -FreezeTopRow -BoldTopRow -Append
+                $Events.Correlated | Export-Excel -Path $xlPath -WorksheetName 'Korrelation' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
+                    New-ConditionalText -Range 'F:F' -RuleType GreaterThan -ConditionValue 60 -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                )
             }
             if ((SafeCount $Events.LogonFails) -gt 0) {
-                $Events.LogonFails | Select-Object -First 500 | Export-Excel -Path $xlPath -WorksheetName 'LogonFails' -AutoSize -FreezeTopRow -BoldTopRow -Append
+                $Events.LogonFails | Select-Object -First 500 | Export-Excel -Path $xlPath -WorksheetName 'LogonFails' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
+                    New-ConditionalText 'NTLM' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+                    New-ConditionalText 'Kerberos' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
+                )
+            }
+            if ((SafeCount $Events.Lockouts) -gt 0) {
+                $Events.Lockouts | Export-Excel -Path $xlPath -WorksheetName 'Lockouts' -AutoSize -FreezeTopRow -BoldTopRow -Append
             }
         }
 
@@ -747,7 +825,8 @@ function Send-Report {
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  RC4 Environment Discovery v1.0" -ForegroundColor Cyan
+Write-Host "  RC4 Environment Discovery v1.1" -ForegroundColor Cyan
+Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
 Write-Host "  Zeitraum: letzte $Hours Stunden auf $(hostname)" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
