@@ -391,8 +391,8 @@ $typClass = @{
     'Fehler'='fehler'; 'Warnung'='warnung'; 'Information'='information'
 }
 
-$aktivCount = @($findings | Where-Object { $_.Typ -eq 'Fehler' }).Count
-$schlafCount = @($findings | Where-Object { $_.Typ -eq 'Warnung' }).Count
+$fehlerCount = @($findings | Where-Object { $_.Typ -eq 'Fehler' }).Count
+$warnCount = @($findings | Where-Object { $_.Typ -eq 'Warnung' }).Count
 $infoCount = @($findings | Where-Object { $_.Typ -eq 'Information' }).Count
 
 $htmlBody = @"
@@ -403,8 +403,8 @@ $htmlBody = @"
 <p class="meta">Erstellt: $(Get-Date -Format 'yyyy-MM-dd HH:mm') | Quelle: $ReportPath</p>
 
 <div class="summary-grid">
-<div class="summary-card"><div class="label">Fehler</div><div class="value" style="color:$(if($aktivCount -gt 0){'#791F1F'}else{'#085041'})">$aktivCount</div></div>
-<div class="summary-card"><div class="label">Warnungen</div><div class="value" style="color:$(if($schlafCount -gt 0){'#633806'}else{'#085041'})">$schlafCount</div></div>
+<div class="summary-card"><div class="label">Fehler</div><div class="value" style="color:$(if($fehlerCount -gt 0){'#791F1F'}else{'#085041'})">$fehlerCount</div></div>
+<div class="summary-card"><div class="label">Warnungen</div><div class="value" style="color:$(if($warnCount -gt 0){'#633806'}else{'#085041'})">$warnCount</div></div>
 <div class="summary-card"><div class="label">Information</div><div class="value" style="color:#085041">$infoCount</div></div>
 <div class="summary-card"><div class="label">Systeme mit RC4/DES</div><div class="value">$rc4RiskCount</div></div>
 <div class="summary-card"><div class="label">RC4 Tickets (24h)</div><div class="value" style="color:$(if($rc4TicketCount -gt 0){'#791F1F'}else{'#085041'})">$rc4TicketCount</div></div>
@@ -472,9 +472,9 @@ if ($hasExcel) {
     # --- Tab 1: Uebersicht ---
     $overview = @()
     $overview += [PSCustomObject]@{ Bereich='Domaene'; Wert=$DomainLabel; Status='Info' }
-    $overview += [PSCustomObject]@{ Bereich='Aktive Risiken'; Wert=$aktivCount; Status=if($aktivCount -gt 0){'Fehler'}else{'Information'} }
-    $overview += [PSCustomObject]@{ Bereich='Schlafende Risiken'; Wert=$schlafCount; Status=if($schlafCount -gt 0){'Warnung'}else{'Information'} }
-    $overview += [PSCustomObject]@{ Bereich='Passiv/Mitigiert'; Wert=$passivCount; Status='Information' }
+    $overview += [PSCustomObject]@{ Bereich='Fehler'; Wert=$fehlerCount; Status=if($fehlerCount -gt 0){'Fehler'}else{'Information'} }
+    $overview += [PSCustomObject]@{ Bereich='Warnungen'; Wert=$warnCount; Status=if($warnCount -gt 0){'Warnung'}else{'Information'} }
+    $overview += [PSCustomObject]@{ Bereich='Information'; Wert=$infoCount; Status='Information' }
     $overview += [PSCustomObject]@{ Bereich='Systeme mit RC4/DES'; Wert=$rc4RiskCount; Status=if($rc4RiskCount -gt 0){'Warnung'}else{'Information'} }
     $overview += [PSCustomObject]@{ Bereich='RC4 Tickets (24h)'; Wert=$rc4TicketCount; Status=if($rc4TicketCount -gt 0){'Fehler'}else{'Information'} }
     $overview += [PSCustomObject]@{ Bereich='GPO Wert'; Wert=$gpoVal; Status=$gpoStatus }
