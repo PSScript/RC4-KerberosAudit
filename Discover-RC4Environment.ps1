@@ -46,7 +46,7 @@
     .\Discover-RC4Environment.ps1 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
 
 .NOTES
-    Version : 1.1
+    Version : 1.3
     Datum   : 2026-03
     Ref     : https://learn.microsoft.com/en-us/windows-server/security/kerberos/detect-remediate-rc4-kerberos
               https://borncity.com/blog/2025/09/27/windows-server-2025-als-dc-finger-weg-bei-gemischten-umgebungen-rc4-problem/
@@ -1143,7 +1143,7 @@ function Send-Report {
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  RC4 Environment Discovery v1.1" -ForegroundColor Cyan
+Write-Host "  RC4 Environment Discovery v1.3" -ForegroundColor Cyan
 Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
 Write-Host "  Zeitraum: letzte $Hours Stunden auf $(hostname)" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
