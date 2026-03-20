@@ -242,7 +242,7 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 | 3 | Delegation + RC4 vs. Tickets | SCHLAFEND / AKTIV |
 | 4 | PreAuth vs. RC4 | GETRENNT / AKTIV |
 | 5 | SMB Signing (Verweis) | HINWEIS |
-| 6 | SAP Indikation | OHNE FOLGEN / PRÜFEN |
+| 6 | SAP Indikation | HINWEIS / PRÜFEN |
 | 7 | Maschinenkonto-Rotation | SCHLAFEND |
 | 8 | NOT SET Accounts vs. April 2026 | SCHLAFEND |
 | 9 | KDCSVC Audit Events 201-209 (seit Jan 2026 CU) | AKTIV / OK / SCHLAFEND |
@@ -255,7 +255,7 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 | **AKTIV** | Jetzt ein Problem. Sofort handeln. |
 | **SCHLAFEND** | Kein Problem heute, aber ein konkreter Trigger aktiviert es. |
 | **PASSIV** | Formell vorhanden, faktisch ohne Auswirkung. Aufräumen risikofrei. |
-| **OHNE FOLGEN** | Durch andere Befunde ausgeschlossen (z.B. SAP bei 0 RC4-Tickets). |
+| **HINWEIS** | Durch andere Befunde ausgeschlossen (z.B. SAP bei 0 RC4-Tickets). |
 | **GETRENNT** | Befund existiert aber hat eine andere Ursache als RC4. |
 
 ### Erzeugte Dateien
@@ -352,7 +352,7 @@ Standalone HTML-Datei. Kein Server nötig, druckbar, per E-Mail versendbar.
 | 3 | Trusts ohne AES | Trust-Namen, ksetup-Befehle |
 | 4 | DCs mit DES | DC-Namen, Set-ADComputer Befehle, GPO-Warnung |
 | 5 | Delegation mit RC4 | Account-Namen, DelegateTo, Keytab-Anleitung |
-| 6 | SAP Kompatibilität | Ohne Folgen bei 0 RC4-Tickets |
+| 6 | SAP Kompatibilität | Hinweis bei 0 RC4-Tickets |
 | 7 | PreAuth / Credential-Hygiene | Top Accounts, Ursachen, Abgrenzung zu RC4 |
 | 8 | NOT SET Accounts | Anzahl, April-2026-Deadline |
 | 9 | SMB Signing | Mismatch-Erkennung, Konsistenz-Prüfung |

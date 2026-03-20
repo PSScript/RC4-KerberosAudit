@@ -257,11 +257,11 @@ if ((SafeCount $delegRC4) -gt 0) {
 
 # --- Finding 6: SAP ---
 $findings += [PSCustomObject]@{
-    Nr=6; Typ=if($rc4TicketCount -eq 0){'OHNE FOLGEN'}else{'PRUEFEN'}
+    Nr=6; Typ=if($rc4TicketCount -eq 0){'HINWEIS'}else{'PRUEFEN'}
     Titel='SAP Kerberos-Kompatibilitaet'
     Befund=if($rc4TicketCount -eq 0){"0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."}else{"$rc4TicketCount RC4-Tickets — pruefen ob SAP-SPNs betroffen sind."}
     Betroffene='SAP Application Server'
-    Auswirkung=if($rc4TicketCount -eq 0){"Ohne Folgen. Wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."}else{"Wenn SAP < 7.53 und RC4-Tickets fuer SAP-SPNs fliessen: SAP Kernel Update auf >= 7.53 erforderlich."}
+    Auswirkung=if($rc4TicketCount -eq 0){"Hinweis. Wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."}else{"Wenn SAP < 7.53 und RC4-Tickets fuer SAP-SPNs fliessen: SAP Kernel Update auf >= 7.53 erforderlich."}
     Mitigation=if($rc4TicketCount -eq 0){"Keine Aktion noetig."}else{"RC4-Tickets nach SAP-SPNs filtern. Wenn betroffen: SAP Kernel Update."}
     Seiteneffekte='Keine — SAP verwendet bereits AES.'
 }
@@ -349,7 +349,7 @@ if ((SafeCount $ntlmV1) -gt 0) {
 }
 
 # --- Priority sort: AKTIV first, then SCHLAFEND, then rest ---
-$typPrio = @{ 'AKTIV'=1; 'SCHLAFEND'=2; 'WARNUNG'=2; 'UEBERGANG'=3; 'GETRENNT'=4; 'PASSIV'=5; 'OHNE FOLGEN'=5; 'OHNE_FOLGEN'=5; 'HINWEIS'=6; 'OK'=7; 'PRUEFEN'=2 }
+$typPrio = @{ 'AKTIV'=1; 'SCHLAFEND'=2; 'WARNUNG'=2; 'UEBERGANG'=3; 'GETRENNT'=4; 'PASSIV'=5; 'HINWEIS'=5; 'HINWEIS'=5; 'HINWEIS'=6; 'OK'=7; 'PRUEFEN'=2 }
 $findings = @($findings | Sort-Object { if ($typPrio[$_.Typ]) { $typPrio[$_.Typ] } else { 99 } }, Nr)
 
 Write-Host "`n  $((SafeCount $findings)) Findings generiert (Prioritaet: AKTIV zuerst)" -ForegroundColor Cyan
@@ -372,7 +372,7 @@ tr:nth-child(even) { background: #f5f0f0; }
 .pill { display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
 .aktiv { background: #FCEBEB; color: #791F1F; }
 .schlafend { background: #FFF8E1; color: #633806; }
-.passiv, .ohne-folgen, .uebergang { background: #E1F5EE; color: #085041; }
+.passiv, .hinweis, .uebergang { background: #E1F5EE; color: #085041; }
 .getrennt { background: #E6F1FB; color: #0C447C; }
 .ok { background: #E1F5EE; color: #085041; }
 .warnung { background: #FFF8E1; color: #633806; }
@@ -393,7 +393,7 @@ tr:nth-child(even) { background: #f5f0f0; }
 
 $typClass = @{
     'AKTIV'='aktiv'; 'SCHLAFEND'='schlafend'; 'PASSIV'='passiv'
-    'OHNE FOLGEN'='mitigiert'; 'GETRENNT'='getrennt'; 'OK'='ok'
+    'HINWEIS'='mitigiert'; 'GETRENNT'='getrennt'; 'OK'='ok'
     'UEBERGANG'='uebergang'; 'WARNUNG'='warnung'; 'HINWEIS'='hinweis'; 'PRUEFEN'='warnung'
 }
 
@@ -499,7 +499,7 @@ if ($hasExcel) {
         (New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
         (New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
         (New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
-        (New-ConditionalText 'OHNE_FOLGEN' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
+        (New-ConditionalText 'HINWEIS' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
         (New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C')
     )
 

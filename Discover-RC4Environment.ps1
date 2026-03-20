@@ -1219,12 +1219,12 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=6; Typ='OHNE FOLGEN'; Bereich='SAP Kerberos'
+            Nr=6; Typ='HINWEIS'; Bereich='SAP Kerberos'
             Befund="0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."
-            Bewertung="Ohne Folgen — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
+            Bewertung="Hinweis — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
             Bedingung="Keine weitere Aktion noetig solange der SAP Kernel nicht downgraded wird."
         }
-        Write-Host "  [6] OHNE FOLGEN: SAP" -ForegroundColor Green
+        Write-Host "  [6] HINWEIS: SAP" -ForegroundColor Green
         Write-Host "      0 RC4-Tickets — SAP funktioniert mit AES. Kein RC4-Risiko fuer SAP." -ForegroundColor DarkGray
         Write-Host "      -> Bleibt mitigiert solange SAP Kernel nicht downgraded wird`n" -ForegroundColor DarkGray
     }
@@ -1483,7 +1483,7 @@ if ($ReassessFrom) {
                     New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                     New-ConditionalText 'SCHLAFEND'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                     New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                    New-ConditionalText 'OHNE_FOLGEN'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                    New-ConditionalText 'HINWEIS'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                     New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
                     New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                 )
@@ -1617,7 +1617,7 @@ if ((SafeCount $crossCheck) -gt 0) {
                 New-ConditionalText 'AKTIV'    -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                 New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                 New-ConditionalText 'PASSIV'   -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                New-ConditionalText 'OHNE_FOLGEN' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                New-ConditionalText 'HINWEIS' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                 New-ConditionalText 'GETRENNT' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
                 New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
             )
