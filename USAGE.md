@@ -223,6 +223,8 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 | `Get-DelegationAccounts` | Constrained + Unconstrained Delegation |
 | `Get-KerberosGPOPolicy` | GPO-Wert mit Empfehlung |
 | `Get-RC4TicketsBySystem` | Event-Korrelation mit System-Matching |
+| `Get-KdcsvcAuditEvents` | KDCSVC Events 201-209 (System Log, seit Januar 2026 CU) |
+| `Get-NTLMv1Usage` | NTLMv1 vs NTLMv2 Erkennung via LmPackageName |
 | `Write-Kreuzpruefung` | Bedingte Risikobewertung aus kombinierten Befunden |
 | `Import-PreviousReport` | CSV-Import für Reassessment |
 | `Export-ExcelReport` | Excel mit Highlighting (ImportExcel) |
@@ -231,7 +233,7 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 | `Get-EncCategory` | Bitmask → Kategorie (RC4_ONLY, AES_ONLY, etc.) |
 | `SafeCount` | StrictMode-sicherer Count für Arrays/Einzelobjekte |
 
-### Kreuzprüfung (8 Checks)
+### Kreuzprüfung (10 Checks)
 
 | Nr | Check | Typ-Möglichkeiten |
 |---|---|---|
@@ -240,9 +242,11 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 | 3 | Delegation + RC4 vs. Tickets | SCHLAFEND / AKTIV |
 | 4 | PreAuth vs. RC4 | GETRENNT / AKTIV |
 | 5 | SMB Signing (Verweis) | HINWEIS |
-| 6 | SAP Indikation | IMPLIZIT MITIGIERT / PRÜFEN |
+| 6 | SAP Indikation | OHNE FOLGEN / PRÜFEN |
 | 7 | Maschinenkonto-Rotation | SCHLAFEND |
 | 8 | NOT SET Accounts vs. April 2026 | SCHLAFEND |
+| 9 | KDCSVC Audit Events 201-209 (seit Jan 2026 CU) | AKTIV / OK / SCHLAFEND |
+| 10 | NTLMv1 vs NTLMv2 | AKTIV / HINWEIS |
 
 #### Typ-Bedeutungen
 
@@ -250,8 +254,8 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 |---|---|
 | **AKTIV** | Jetzt ein Problem. Sofort handeln. |
 | **SCHLAFEND** | Kein Problem heute, aber ein konkreter Trigger aktiviert es. |
-| **PASSIV** | Formell vorhanden, faktisch mitigiert. Aufräumen risikofrei. |
-| **IMPLIZIT MITIGIERT** | Durch andere Befunde ausgeschlossen (z.B. SAP bei 0 RC4-Tickets). |
+| **PASSIV** | Formell vorhanden, faktisch ohne Auswirkung. Aufräumen risikofrei. |
+| **OHNE FOLGEN** | Durch andere Befunde ausgeschlossen (z.B. SAP bei 0 RC4-Tickets). |
 | **GETRENNT** | Befund existiert aber hat eine andere Ursache als RC4. |
 
 ### Erzeugte Dateien
@@ -270,6 +274,8 @@ Ordner: `C:\Temp\RC4_[domain]_[timestamp]\`
 | `Lockouts.csv` | Event 4740 |
 | `Correlated.csv` | Lockouts korreliert mit Kerberos-Fehlern |
 | `Kreuzpruefung.csv` | Bedingte Risikobewertung |
+| `KDCSVC_Audit.csv` | KDCSVC Events 201-209 (wenn vorhanden) |
+| `NTLMv1_Usage.csv` | NTLMv1-Anmeldungen mit Account und Workstation (wenn erkannt) |
 | `RC4_[domain]_Report.xlsx` | Excel mit Highlighting (benötigt ImportExcel) |
 
 ### ImportExcel installieren
@@ -337,7 +343,7 @@ foreach ($f in $folders) {
 
 Standalone HTML-Datei. Kein Server nötig, druckbar, per E-Mail versendbar.
 
-### Die 9 Findings
+### Die 11 Findings (sortiert nach Priorität: AKTIV zuerst)
 
 | Nr | Titel | Felder |
 |---|---|---|
@@ -346,10 +352,12 @@ Standalone HTML-Datei. Kein Server nötig, druckbar, per E-Mail versendbar.
 | 3 | Trusts ohne AES | Trust-Namen, ksetup-Befehle |
 | 4 | DCs mit DES | DC-Namen, Set-ADComputer Befehle, GPO-Warnung |
 | 5 | Delegation mit RC4 | Account-Namen, DelegateTo, Keytab-Anleitung |
-| 6 | SAP Kompatibilität | Implizit mitigiert bei 0 RC4-Tickets |
+| 6 | SAP Kompatibilität | Ohne Folgen bei 0 RC4-Tickets |
 | 7 | PreAuth / Credential-Hygiene | Top Accounts, Ursachen, Abgrenzung zu RC4 |
 | 8 | NOT SET Accounts | Anzahl, April-2026-Deadline |
 | 9 | SMB Signing | Mismatch-Erkennung, Konsistenz-Prüfung |
+| 10 | KDCSVC Audit Events | Events 201-209, was im April fehlschlägt |
+| 11 | NTLMv1 Anmeldungen | V1 vs V2, Mandiant Rainbow Tables, Top Accounts |
 
 #### Finding-Felder erklärt
 
@@ -376,6 +384,67 @@ Import-Csv 'C:\Temp\RC4_CONTOSO_...\Citrix.csv' -Delimiter ';'
 ```
 
 Import in Excel: Datei → Öffnen → Delimiter "Semikolon" wählen.
+
+---
+
+## CVE-2026-20833 — Dreiphasen-Plan
+
+| Phase | Zeitraum | Was passiert | Rücknahme |
+|---|---|---|---|
+| **1. Audit** | **Januar 2026 (aktiv!)** | Neue KDCSVC Events 201-209. Registry `RC4DefaultDisablementPhase`. KDC bevorzugt AES. | Ja |
+| **2. Enforcement** | **April 2026** | Default für NOT SET Accounts wird AES-only. RC4-Fallback deaktiviert. Explizite Werte (28, 24) nicht betroffen. | Ja (Rollback) |
+| **3. Final** | **Juli 2026** | Audit-Modus entfernt. Enforcement einziger Betriebsmodus. | Nein |
+
+**Wichtig:** Accounts mit explizitem `msDS-SupportedEncryptionTypes` (z.B. 28 oder 24) sind **nicht betroffen** — Enforcement ändert nur das Verhalten für NOT SET (Wert 0).
+
+### Registry-Steuerung
+
+```
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters
+  RC4DefaultDisablementPhase (REG_DWORD)
+    0 = Legacy (keine Änderung)
+    1 = Audit (Januar 2026 Default)
+    2 = Enforcement simulieren (April-Verhalten vorab testen!)
+```
+
+### KDCSVC Audit Events (System Log, seit Januar 2026 CU)
+
+| Event | Phase | Bedeutung |
+|---|---|---|
+| 201 | Audit | RC4 erkannt: Client bietet nur RC4, Service hat kein msDS |
+| 202 | Audit | RC4 erkannt: Service Account hat keine AES-Keys, msDS nicht definiert |
+| 205 | Audit | Unsichere Algorithmen (RC4/DES) in Domain Policy |
+| 206 | Audit | RC4 erkannt: Service hat nur RC4-Keys |
+| 207 | Audit | RC4 erkannt: Service Account hat msDS aber keine AES-Keys |
+| 203 | Enforcement | RC4 **blockiert**: Client nur RC4, Service kein msDS |
+| 204 | Enforcement | RC4 **blockiert**: Service ohne AES-Keys, msDS nicht definiert |
+| 209 | Enforcement | RC4 erkannt wie 201, Enforcement-Phase |
+
+```powershell
+# Prüfen ob der DC KDCSVC Events hat (Januar 2026 CU nötig):
+Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Kdcsvc';Id=201,202,206,207} -MaxEvents 100
+
+# 0 Events = sauber. Events vorhanden = diese Accounts schlagen im April fehl.
+```
+
+### NTLMv1 vs NTLMv2
+
+| | NTLMv1 | NTLMv2 |
+|---|---|---|
+| **Status** | Kryptographisch **gebrochen** (Mandiant Rainbow Tables) | Deprecated, kryptographisch intakt |
+| **Risiko** | Sofortige Credential-Kompromittierung | Design-Schwachpunkt, kein sofortiger Verlust |
+| **Aktion** | Sofort per GPO blockieren | Mittelfristig auf Kerberos umstellen |
+| **Zukunft** | Muss weg | Nächste Windows-Version: standardmäßig deaktiviert |
+
+```powershell
+# NTLMv1-Erkennung (Feld LmPackageName in Event 4624):
+Get-WinEvent -FilterXml '<QueryList><Query><Select Path="Security">
+  *[System[EventID=4624]] and *[EventData[Data[@Name="AuthenticationPackageName"]="NTLM"]]
+</Select></Query></QueryList>' -MaxEvents 100 | ForEach-Object {
+    $x = [xml]$_.ToXml()
+    ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'LmPackageName' }).'#text'
+} | Group-Object | Format-Table Count, Name
+```
 
 ---
 
@@ -408,6 +477,16 @@ Import in Excel: Datei → Öffnen → Delimiter "Semikolon" wählen.
 | 4740 | Security | Account Lockout |
 | 2887 | Directory Service | LDAP Unsigned Binds (24h Zusammenfassung) |
 | 2889 | Directory Service | LDAP Unsigned Bind (einzeln) |
+
+### KDCSVC Events (System Log, seit Januar 2026)
+
+| Event | Log | Bedeutung |
+|---|---|---|
+| 201-202 | System (Kdcsvc) | RC4-Nutzung erkannt (Audit-Phase) |
+| 203-204 | System (Kdcsvc) | RC4-Nutzung blockiert (Enforcement-Phase) |
+| 205 | System (Kdcsvc) | Unsichere Algorithmen in Domain Policy |
+| 206-207 | System (Kdcsvc) | RC4-Keys erkannt (Audit-Phase) |
+| 209 | System (Kdcsvc) | RC4 in Enforcement erkannt |
 
 ---
 
