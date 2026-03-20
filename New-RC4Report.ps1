@@ -129,6 +129,16 @@ $selfFails = @()
 $sfFiles = @(Get-ChildItem $ReportPath -Filter 'DC_SelfFailedLogons_*.csv' -EA SilentlyContinue)
 if ($sfFiles.Count -gt 0) { $selfFails = Import-OptionalCsv $sfFiles[0].FullName }
 
+# KDCSVC Audit Events (seit Januar 2026 CU)
+$kdcsvcEvents = @()
+$kdcFiles = @(Get-ChildItem $ReportPath -Filter 'KDCSVC_Audit.csv' -EA SilentlyContinue)
+if ($kdcFiles.Count -gt 0) { $kdcsvcEvents = Import-OptionalCsv $kdcFiles[0].FullName }
+
+# NTLMv1 Usage
+$ntlmV1 = @()
+$ntlmFiles = @(Get-ChildItem $ReportPath -Filter 'NTLMv1_Usage.csv' -EA SilentlyContinue)
+if ($ntlmFiles.Count -gt 0) { $ntlmV1 = Import-OptionalCsv $ntlmFiles[0].FullName }
+
 # GPO reconstruction
 $gpo = $null
 if ((SafeCount $gpoCsv) -gt 0) {
@@ -247,11 +257,11 @@ if ((SafeCount $delegRC4) -gt 0) {
 
 # --- Finding 6: SAP ---
 $findings += [PSCustomObject]@{
-    Nr=6; Typ=if($rc4TicketCount -eq 0){'IMPLIZIT MITIGIERT'}else{'PRUEFEN'}
+    Nr=6; Typ=if($rc4TicketCount -eq 0){'OHNE FOLGEN'}else{'PRUEFEN'}
     Titel='SAP Kerberos-Kompatibilitaet'
     Befund=if($rc4TicketCount -eq 0){"0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."}else{"$rc4TicketCount RC4-Tickets — pruefen ob SAP-SPNs betroffen sind."}
     Betroffene='SAP Application Server'
-    Auswirkung=if($rc4TicketCount -eq 0){"Implizit mitigiert. Wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."}else{"Wenn SAP < 7.53 und RC4-Tickets fuer SAP-SPNs fliessen: SAP Kernel Update auf >= 7.53 erforderlich."}
+    Auswirkung=if($rc4TicketCount -eq 0){"Ohne Folgen. Wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."}else{"Wenn SAP < 7.53 und RC4-Tickets fuer SAP-SPNs fliessen: SAP Kernel Update auf >= 7.53 erforderlich."}
     Mitigation=if($rc4TicketCount -eq 0){"Keine Aktion noetig."}else{"RC4-Tickets nach SAP-SPNs filtern. Wenn betroffen: SAP Kernel Update."}
     Seiteneffekte='Keine — SAP verwendet bereits AES.'
 }
@@ -304,14 +314,45 @@ if ((SafeCount $smbCsv) -gt 0) {
             Titel='SMB Signing Konsistenz'
             Befund="$(SafeCount $smbCsv) Server geprueft. $(SafeCount $allTrue) mit Server+Client Required=True. $(SafeCount $smbMismatch) mit Mismatch."
             Betroffene=if((SafeCount $smbMismatch) -gt 0){($smbMismatch | Select-Object -First 5 | ForEach-Object { $n = if ($_.Name) {$_.Name} elseif ($_.ComputerName) {$_.ComputerName} else {'?'}; "$n (S=$($_.$srvCol) C=$($_.$cliCol))" }) -join ', '}else{"Alle konsistent True/True — Zielzustand fuer Server 2025."}
-            Auswirkung=if((SafeCount $smbMismatch) -gt 0){"Inkonsistente Signing-Einstellungen fuehren zu sporadischen Verbindungsabbruechen. Server 2025 erzwingt Signing — Systeme ohne Signing-Support werden abgelehnt."}else{"Kein Risiko. Alle Server verwenden konsistent SMB Signing. Server 2025 Einfuehrung ist kompatibel."}
+            Auswirkung=if((SafeCount $smbMismatch) -gt 0){"Inkonsistente Signing-Einstellungen fuehren zu gelegentlichen Verbindungsabbruechen. Server 2025 erzwingt Signing — Systeme ohne Signing-Support werden abgelehnt."}else{"Kein Risiko. Alle Server verwenden konsistent SMB Signing. Server 2025 Einfuehrung ist kompatibel."}
             Mitigation=if((SafeCount $smbMismatch) -gt 0){"GPO fuer Server und Client Signing auf Required setzen. Drucker und Appliances ohne Signing-Support identifizieren und per Fine-Grained Policy ausschliessen."}else{"Keine Aktion noetig."}
             Seiteneffekte=if((SafeCount $smbMismatch) -gt 0){"Drucker/Appliances ohne SMB Signing verlieren Zugriff auf Shares (Scan-to-Share, Secure Print)."}else{"Keine."}
         }
     }
 }
 
-Write-Host "`n  $((SafeCount $findings)) Findings generiert" -ForegroundColor Cyan
+# --- Finding 10: KDCSVC Audit Events ---
+if ((SafeCount $kdcsvcEvents) -gt 0) {
+    $findings += [PSCustomObject]@{
+        Nr=10; Typ='AKTIV'
+        Titel='KDCSVC Audit Events (Januar 2026 CU)'
+        Befund="$(SafeCount $kdcsvcEvents) KDCSVC Events im System Log. Diese zeigen praezise welche Accounts und Dienste im April 2026 fehlschlagen."
+        Betroffene=(@($kdcsvcEvents | Group-Object EventID | Sort-Object Name | ForEach-Object { "Event $($_.Name): $($_.Count)x" }) -join ', ')
+        Auswirkung="Die betroffenen Accounts werden ab dem April-2026-Patchday bei der Authentifizierung abgelehnt. Event 201/202/206/207 = Warnung (Audit). Event 203/204/209 = blockiert (Enforcement)."
+        Mitigation="Betroffene Accounts auf AES-only (Wert 24) setzen und Passwort rotieren. Details in KDCSVC_Audit.csv."
+        Seiteneffekte="Risikofrei wenn die betroffenen Accounts aktuell AES-Tickets erhalten (aus Prove-RC4Usage ersichtlich)."
+    }
+}
+
+# --- Finding 11: NTLMv1 ---
+if ((SafeCount $ntlmV1) -gt 0) {
+    $v1Top = ($ntlmV1 | Sort-Object { [int]$_.Count } -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Account) ($($_.Count)x von $($_.Workstation))" }) -join '; '
+    $findings += [PSCustomObject]@{
+        Nr=11; Typ='AKTIV'
+        Titel='NTLMv1 Anmeldungen — kryptographisch gebrochen'
+        Befund="$(($ntlmV1 | Measure-Object -Property Count -Sum).Sum) NTLMv1-Anmeldungen erkannt. NTLMv1 ist durch Mandiant Rainbow Tables sofort kompromittierbar."
+        Betroffene=$v1Top
+        Auswirkung="Jede NTLMv1-Anmeldung kann durch einen Angreifer im Netzwerk abgefangen und das Passwort sofort wiederhergestellt werden. NTLMv1 ist ein groesseres Sicherheitsrisiko als RC4 in Kerberos."
+        Mitigation="GPO: Network security: LAN Manager authentication level = Send NTLMv2 response only. Refuse LM and NTLM. Betroffene Systeme (alte Firmware, alte Applikationen) identifizieren und auf NTLMv2 oder Kerberos umstellen."
+        Seiteneffekte="Systeme die nur NTLMv1 koennen verlieren Zugang. Betrifft typischerweise sehr alte Appliances, Drucker oder Legacy-Software."
+    }
+}
+
+# --- Priority sort: AKTIV first, then SCHLAFEND, then rest ---
+$typPrio = @{ 'AKTIV'=1; 'SCHLAFEND'=2; 'WARNUNG'=2; 'UEBERGANG'=3; 'GETRENNT'=4; 'PASSIV'=5; 'OHNE FOLGEN'=5; 'OHNE_FOLGEN'=5; 'HINWEIS'=6; 'OK'=7; 'PRUEFEN'=2 }
+$findings = @($findings | Sort-Object { if ($typPrio[$_.Typ]) { $typPrio[$_.Typ] } else { 99 } }, Nr)
+
+Write-Host "`n  $((SafeCount $findings)) Findings generiert (Prioritaet: AKTIV zuerst)" -ForegroundColor Cyan
 
 #endregion
 
@@ -331,7 +372,7 @@ tr:nth-child(even) { background: #f5f0f0; }
 .pill { display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
 .aktiv { background: #FCEBEB; color: #791F1F; }
 .schlafend { background: #FFF8E1; color: #633806; }
-.passiv, .mitigiert, .uebergang { background: #E1F5EE; color: #085041; }
+.passiv, .ohne-folgen, .uebergang { background: #E1F5EE; color: #085041; }
 .getrennt { background: #E6F1FB; color: #0C447C; }
 .ok { background: #E1F5EE; color: #085041; }
 .warnung { background: #FFF8E1; color: #633806; }
@@ -352,7 +393,7 @@ tr:nth-child(even) { background: #f5f0f0; }
 
 $typClass = @{
     'AKTIV'='aktiv'; 'SCHLAFEND'='schlafend'; 'PASSIV'='passiv'
-    'IMPLIZIT MITIGIERT'='mitigiert'; 'GETRENNT'='getrennt'; 'OK'='ok'
+    'OHNE FOLGEN'='mitigiert'; 'GETRENNT'='getrennt'; 'OK'='ok'
     'UEBERGANG'='uebergang'; 'WARNUNG'='warnung'; 'HINWEIS'='hinweis'; 'PRUEFEN'='warnung'
 }
 
@@ -376,10 +417,24 @@ $htmlBody = @"
 <div class="summary-card"><div class="label">GPO</div><div class="value" style="font-size:14px">$gpoVal</div></div>
 </div>
 
-<h2>Findings</h2>
+<h2>Findings (Priorit&auml;t: kritisch zuerst)</h2>
 "@
 
-foreach ($f in $findings | Sort-Object Nr) {
+# Priority header
+$aktivFindings = @($findings | Where-Object { $_.Typ -eq 'AKTIV' })
+if ($aktivFindings.Count -gt 0) {
+    $htmlBody += '<div style="background:#FCEBEB;border-left:4px solid #C8102E;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0;"><strong style="color:#791F1F;">Sofort handeln:</strong> '
+    $htmlBody += ($aktivFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
+    $htmlBody += '</div>'
+}
+$schlafFindings = @($findings | Where-Object { $_.Typ -eq 'SCHLAFEND' -or $_.Typ -eq 'WARNUNG' })
+if ($schlafFindings.Count -gt 0) {
+    $htmlBody += '<div style="background:#FFF8E1;border-left:4px solid #EF9F27;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0;"><strong style="color:#633806;">Vor April 2026:</strong> '
+    $htmlBody += ($schlafFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
+    $htmlBody += '</div>'
+}
+
+foreach ($f in $findings) {
     $cls = if ($typClass[$f.Typ]) { $typClass[$f.Typ] } else { 'hinweis' }
     $htmlBody += @"
 <div class="finding">
@@ -444,7 +499,7 @@ if ($hasExcel) {
         (New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
         (New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
         (New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
-        (New-ConditionalText 'MITIGIERT' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
+        (New-ConditionalText 'OHNE_FOLGEN' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
         (New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C')
     )
 

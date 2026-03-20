@@ -173,7 +173,7 @@ function Get-Bewertung {
 
     $roleText = switch -Wildcard ($Role) {
         'Citrix-StoreFront' { 'StoreFront ist der erste Hop nach dem Benutzer. Ein RC4-Ticket hier betrifft alle Citrix-Sessions.' }
-        'Citrix-DDC'        { 'Der Delivery Controller brokert Sessions per Kerberos. RC4 hier kann Session-Starts sporadisch stoeren.' }
+        'Citrix-DDC'        { 'Der Delivery Controller brokert Sessions per Kerberos. RC4 hier kann Session-Starts gelegentlich stoeren.' }
         'Citrix-VDA'        { 'VDA hostet die Benutzersitzung. RC4 betrifft den Zugriff auf Ressourcen innerhalb der Session (OWA, Shares).' }
         'NetScaler'         { 'NetScaler/ADC verwendet Constrained Delegation (S4U2Proxy). Die Encryption des delegierten Tickets haengt von diesem Account ab, nicht vom Benutzer.' }
         'Citrix-ServiceAccount' { 'Citrix Service Account mit SPN. Wenn RC4 im Attribut steht, kann der KDC RC4-Tickets fuer Citrix-Dienste ausstellen.' }
@@ -714,9 +714,160 @@ function Get-RC4TicketsBySystem {
     }
 }
 
-#endregion
+function Get-KdcsvcAuditEvents {
+    <#
+    .SYNOPSIS
+        Prueft die neuen KDCSVC Audit Events 201-209 (seit Januar 2026 CU).
+        Diese Events zeigen praezise welche Accounts/Dienste im April fehlschlagen werden.
+    #>
+    [CmdletBinding()]
+    param([int]$Max = 500)
 
-#region ============ PHASE 3: REPORTING ============
+    Write-Host "`n=== KDCSVC RC4 AUDIT (System Log, seit Januar 2026 CU) ===" -ForegroundColor Yellow
+
+    $kdcEvents = @()
+    $eventMap = @{
+        201='RC4 erkannt: Client bietet nur RC4, Service hat kein msDS (Audit)'
+        202='RC4 erkannt: Service Account hat keine AES-Keys, msDS nicht definiert (Audit)'
+        203='RC4 BLOCKIERT: Client nur RC4, Service kein msDS (Enforcement)'
+        204='RC4 BLOCKIERT: Service ohne AES-Keys, msDS nicht definiert (Enforcement)'
+        205='Unsichere Algorithmen (RC4/DES) in Domain Policy DefaultDomainSupportedEncTypes'
+        206='RC4 erkannt: Service hat nur RC4-Keys (Audit)'
+        207='RC4 erkannt: Service Account hat msDS aber keine AES-Keys (Audit)'
+        209='RC4 erkannt wie 201 aber in Enforcement'
+    }
+
+    try {
+        $raw = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'System'
+            ProviderName = 'Kdcsvc'
+            Id = 201,202,203,204,205,206,207,209
+        } -MaxEvents $Max -EA Stop)
+
+        Write-Host "  KDCSVC Events: $(Format-EventCount $raw.Count $Max)" -ForegroundColor $(if ($raw.Count -gt 0) {'Red'} else {'Green'})
+
+        foreach ($evt in $raw) {
+            $msg = $evt.Message
+            # Extract account name from message if possible
+            $acctMatch = [regex]::Match($msg, '(?:account|Account|Konto)[\s:]+(\S+)')
+            $acct = if ($acctMatch.Success) { $acctMatch.Groups[1].Value } else { '' }
+
+            $kdcEvents += [PSCustomObject]@{
+                Time      = $evt.TimeCreated
+                EventID   = $evt.Id
+                Bedeutung = $eventMap[[int]$evt.Id]
+                Account   = $acct
+                Message   = $msg.Substring(0, [Math]::Min(200, $msg.Length))
+            }
+        }
+
+        if ($raw.Count -gt 0) {
+            Write-Host ""
+            $raw | Group-Object Id | Sort-Object Name | ForEach-Object {
+                $desc = if ($eventMap[[int]$_.Name]) { $eventMap[[int]$_.Name] } else { 'Unbekannt' }
+                $color = if ($_.Name -in @('203','204','209')) {'Red'} else {'Yellow'}
+                Write-Host "  Event $($_.Name): $($_.Count)x — $desc" -ForegroundColor $color
+            }
+            Write-Host ""
+            Write-Host "  ACHTUNG: Diese Events zeigen was im April 2026 fehlschlagen wird!" -ForegroundColor Red
+            Write-Host "  Event 201/202/206/207 = Audit (Warnung). Event 203/204/209 = Blockiert." -ForegroundColor Red
+        }
+    }
+    catch {
+        if ($_.Exception.Message -match 'No events were found|Es wurden keine|nicht gefunden') {
+            Write-Host "  KDCSVC Events: 0 — keine RC4-Risiken durch den neuen Audit erkannt" -ForegroundColor Green
+        }
+        elseif ($_.Exception.Message -match 'not a valid log|kein gueltiges Protokoll|Quellname.*nicht gefunden') {
+            Write-Host "  KDCSVC Provider nicht verfuegbar — Januar 2026 CU noch nicht installiert?" -ForegroundColor DarkGray
+            Write-Host "  Pruefen: Get-HotFix | Where-Object { \$_.InstalledOn -ge '2026-01-13' }" -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "  KDCSVC Fehler: $($_.Exception.Message)" -ForegroundColor DarkGray
+        }
+    }
+
+    # Registry: RC4DefaultDisablementPhase
+    Write-Host ""
+    $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Kerberos\Parameters'
+    $phase = $null
+    try { $phase = (Get-ItemProperty -Path $regPath -Name 'RC4DefaultDisablementPhase' -EA Stop).RC4DefaultDisablementPhase } catch {}
+
+    $phaseLabels = @{ 0='Legacy (keine Aenderung)'; 1='Audit (Januar 2026 Default)'; 2='Enforcement simulieren (April-Verhalten)' }
+    $phaseLabel = if ($null -eq $phase) { 'Nicht gesetzt (OS-Default)' } elseif ($phaseLabels[$phase]) { "$phase = $($phaseLabels[$phase])" } else { "$phase = Unbekannt" }
+
+    Write-Host "  RC4DefaultDisablementPhase: $phaseLabel" -ForegroundColor $(if ($phase -eq 2) {'Red'} elseif ($phase -eq 1) {'Yellow'} else {'DarkGray'})
+
+    return @{
+        Events = $kdcEvents
+        Phase = $phase
+        CUInstalled = ($kdcEvents.Count -gt 0 -or $null -ne $phase)
+    }
+}
+
+function Get-NTLMv1Usage {
+    <#
+    .SYNOPSIS
+        Erkennt NTLMv1 vs NTLMv2 in fehlgeschlagenen Anmeldungen.
+        NTLMv1 ist kryptographisch gebrochen (Mandiant Rainbow Tables).
+    #>
+    [CmdletBinding()]
+    param([int]$MsBack, [int]$Max = 1000)
+
+    Write-Host "`n=== NTLMv1 vs NTLMv2 ERKENNUNG ===" -ForegroundColor Yellow
+
+    # Event 4624 (Success) mit LmPackageName zeigt welche NTLM-Version verwendet wird
+    $xml = '<QueryList><Query Id="0" Path="Security"><Select Path="Security">*[System[(EventID=4624) and TimeCreated[timediff(@SystemTime) &lt;= MSBACK]]] and *[EventData[Data[@Name=''AuthenticationPackageName'']=''NTLM'']]</Select></Query></QueryList>'.Replace('MSBACK', $MsBack)
+
+    $ntlmV1 = 0; $ntlmV2 = 0; $ntlmUnknown = 0
+    $v1Accounts = @{}
+
+    try {
+        $raw = @(Get-WinEvent -FilterXml $xml -MaxEvents $Max -EA Stop)
+        foreach ($evt in $raw) {
+            $x = [xml]$evt.ToXml()
+            $lmPkg = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'LmPackageName' }).'#text' } catch { $null }
+            $acct  = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text' } catch { '?' }
+            $ws    = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'WorkstationName' }).'#text' } catch { '?' }
+
+            if ($lmPkg -match 'V1' -or $lmPkg -match 'LM') {
+                $ntlmV1++
+                $key = "$acct|$ws"
+                if (-not $v1Accounts.ContainsKey($key)) { $v1Accounts[$key] = 0 }
+                $v1Accounts[$key]++
+            }
+            elseif ($lmPkg -match 'V2') { $ntlmV2++ }
+            else { $ntlmUnknown++ }
+        }
+    }
+    catch {
+        if ($_.Exception.Message -notmatch 'No events were found|Es wurden keine') {
+            Write-Host "  Fehler: $($_.Exception.Message)" -ForegroundColor DarkGray
+        }
+    }
+
+    Write-Host "  NTLMv2 Anmeldungen  : $ntlmV2" -ForegroundColor $(if ($ntlmV2 -gt 0) {'Yellow'} else {'Green'})
+    Write-Host "  NTLMv1 Anmeldungen  : $ntlmV1" -ForegroundColor $(if ($ntlmV1 -gt 0) {'Red'} else {'Green'})
+
+    if ($ntlmV1 -gt 0) {
+        Write-Host ""
+        Write-Host "  WARNUNG: NTLMv1 ist kryptographisch gebrochen!" -ForegroundColor Red
+        Write-Host "  Mandiant Rainbow Tables ermoeglichen sofortige Credential-Kompromittierung." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  NTLMv1 Quellen:" -ForegroundColor Red
+        $v1Accounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10 | ForEach-Object {
+            $parts = $_.Key -split '\|'
+            Write-Host "    $($parts[0].PadRight(25)) von $($parts[1].PadRight(20)) $($_.Value)x" -ForegroundColor Red
+        }
+    }
+
+    return @{
+        V1Count = $ntlmV1
+        V2Count = $ntlmV2
+        V1Accounts = $v1Accounts
+    }
+}
+
+#endregion
 
 function Export-ExcelReport {
     [CmdletBinding()]
@@ -1068,12 +1219,12 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=6; Typ='IMPLIZIT MITIGIERT'; Bereich='SAP Kerberos'
+            Nr=6; Typ='OHNE FOLGEN'; Bereich='SAP Kerberos'
             Befund="0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."
-            Bewertung="Implizit mitigiert — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
+            Bewertung="Ohne Folgen — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
             Bedingung="Keine weitere Aktion noetig solange der SAP Kernel nicht downgraded wird."
         }
-        Write-Host "  [6] IMPLIZIT MITIGIERT: SAP" -ForegroundColor Green
+        Write-Host "  [6] OHNE FOLGEN: SAP" -ForegroundColor Green
         Write-Host "      0 RC4-Tickets — SAP funktioniert mit AES. Kein RC4-Risiko fuer SAP." -ForegroundColor DarkGray
         Write-Host "      -> Bleibt mitigiert solange SAP Kernel nicht downgraded wird`n" -ForegroundColor DarkGray
     }
@@ -1271,7 +1422,7 @@ if ($ReassessFrom) {
     # =============================================
     Write-Host ""
     Write-Host "=================================================================" -ForegroundColor Magenta
-    Write-Host "  RC4 Environment Discovery v1.5 — REASSESSMENT" -ForegroundColor Magenta
+    Write-Host "  RC4 Environment Discovery v1.6 — REASSESSMENT" -ForegroundColor Magenta
     Write-Host "  Quelle: $ReassessFrom" -ForegroundColor Magenta
     Write-Host "=================================================================" -ForegroundColor Magenta
 
@@ -1332,7 +1483,7 @@ if ($ReassessFrom) {
                     New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                     New-ConditionalText 'SCHLAFEND'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                     New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                    New-ConditionalText 'MITIGIERT'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                    New-ConditionalText 'OHNE_FOLGEN'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                     New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
                     New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                 )
@@ -1362,7 +1513,7 @@ if ($ReassessFrom) {
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  RC4 Environment Discovery v1.5" -ForegroundColor Cyan
+Write-Host "  RC4 Environment Discovery v1.6" -ForegroundColor Cyan
 Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
 Write-Host "  Zeitraum: letzte $Hours Stunden auf $(hostname)" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
@@ -1394,14 +1545,62 @@ Write-Status "Delegation-Accounts mit RC4/DES" "$((SafeCount $delegRC4))" $(if (
 
 # Phase 2: Events
 $events = $null
+$kdcsvc = $null
+$ntlmInfo = $null
 if (-not $SkipEvents) {
     $knownNames = ($allSystems | Select-Object -ExpandProperty Name) + ($deleg | Select-Object -ExpandProperty Name)
     $events = Get-RC4TicketsBySystem -MsBack $msBack -Max $MaxEvents -KnownSystems $knownNames
+    $kdcsvc = Get-KdcsvcAuditEvents -Max $MaxEvents
+    $ntlmInfo = Get-NTLMv1Usage -MsBack $msBack -Max $MaxEvents
 }
 
 # Phase 3: Cross-check
 $crossCheck = Write-Kreuzpruefung -Discovery $discovery -Events $events -GPO $gpo `
     -AllSystems $allSystems -RC4Risk $rc4Risk -DelegRC4 $delegRC4
+
+# Additional findings from KDCSVC and NTLMv1 (append to crossCheck)
+if ($kdcsvc -and (SafeCount $kdcsvc.Events) -gt 0) {
+    $crossCheck += [PSCustomObject]@{
+        Nr=9; Typ='AKTIV'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
+        Befund="$((SafeCount $kdcsvc.Events)) KDCSVC Events im System Log. Diese zeigen Accounts/Dienste die im April 2026 fehlschlagen."
+        Bewertung="Aktiv — der neue Microsoft Audit hat RC4-Abhaengigkeiten erkannt. Event 201/202/206/207 = Warnung. Event 203/204/209 = bereits blockiert."
+        Bedingung="Diese Accounts schlagen ab dem April-2026-Patchday fehl wenn nicht vorher auf AES umgestellt."
+    }
+}
+elseif ($kdcsvc -and (SafeCount $kdcsvc.Events) -eq 0 -and $kdcsvc.CUInstalled) {
+    $crossCheck += [PSCustomObject]@{
+        Nr=9; Typ='OK'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
+        Befund="0 KDCSVC Events. Der Microsoft Audit erkennt keine RC4-Abhaengigkeiten."
+        Bewertung="Kein RC4-Risiko durch den neuen Audit erkannt. Die Umgebung ist fuer das April-Update vorbereitet."
+        Bedingung="Keine."
+    }
+}
+elseif ($kdcsvc -and -not $kdcsvc.CUInstalled) {
+    $crossCheck += [PSCustomObject]@{
+        Nr=9; Typ='SCHLAFEND'; Bereich='KDCSVC Audit Events'
+        Befund="Januar 2026 CU nicht installiert oder KDCSVC Provider nicht verfuegbar."
+        Bewertung="Schlafend — ohne das Januar CU fehlen die neuen Audit Events 201-209. Erst nach Installation zeigt der KDC welche Accounts im April fehlschlagen."
+        Bedingung="Januar 2026 CU auf allen DCs installieren."
+    }
+}
+
+if ($ntlmInfo -and $ntlmInfo.V1Count -gt 0) {
+    $v1Top = ($ntlmInfo.V1Accounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { ($_.Key -split '\|')[0] }) -join ', '
+    $crossCheck += [PSCustomObject]@{
+        Nr=10; Typ='AKTIV'; Bereich='NTLMv1 Anmeldungen'
+        Befund="$($ntlmInfo.V1Count) NTLMv1-Anmeldungen erkannt. NTLMv1 ist kryptographisch gebrochen (Mandiant Rainbow Tables)."
+        Bewertung="Aktiv — NTLMv1 ermoeglicht sofortige Credential-Kompromittierung. NTLMv2 ist deprecated aber noch nicht gebrochen. NTLMv1 muss sofort per GPO blockiert werden."
+        Bedingung="Top Accounts: $v1Top. GPO: Network security: LAN Manager authentication level = Send NTLMv2 response only. Refuse LM and NTLM."
+    }
+}
+elseif ($ntlmInfo -and $ntlmInfo.V2Count -gt 0) {
+    $crossCheck += [PSCustomObject]@{
+        Nr=10; Typ='HINWEIS'; Bereich='NTLM Anmeldungen'
+        Befund="$($ntlmInfo.V2Count) NTLMv2-Anmeldungen, 0 NTLMv1. NTLMv2 ist deprecated (Microsoft, Januar 2026)."
+        Bewertung="NTLMv2 ist kryptographisch nicht gebrochen aber deprecated. In der naechsten Windows-Version wird NTLM standardmaessig deaktiviert. Kerberos ist der Zielzustand."
+        Bedingung="Mittelfristig: NTLM-Abhaengigkeiten identifizieren und auf Kerberos umstellen."
+    }
+}
 
 # Phase 4: Export
 Write-Host "`n=== EXPORT ===" -ForegroundColor Cyan
@@ -1418,7 +1617,7 @@ if ((SafeCount $crossCheck) -gt 0) {
                 New-ConditionalText 'AKTIV'    -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
                 New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
                 New-ConditionalText 'PASSIV'   -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                New-ConditionalText 'MITIGIERT' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                New-ConditionalText 'OHNE_FOLGEN' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                 New-ConditionalText 'GETRENNT' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
                 New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
             )
@@ -1427,6 +1626,22 @@ if ((SafeCount $crossCheck) -gt 0) {
     $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
         Export-Csv (Join-Path $reportDir 'Kreuzpruefung.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
     Write-Host "  CSV          : Kreuzpruefung.csv" -ForegroundColor Green
+}
+
+# KDCSVC Events CSV
+if ($kdcsvc -and (SafeCount $kdcsvc.Events) -gt 0) {
+    $kdcsvc.Events | Export-Csv (Join-Path $reportDir 'KDCSVC_Audit.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+    Write-Host "  CSV          : KDCSVC_Audit.csv ($((SafeCount $kdcsvc.Events)) Events)" -ForegroundColor Green
+}
+
+# NTLMv1 CSV
+if ($ntlmInfo -and $ntlmInfo.V1Count -gt 0) {
+    $ntlmInfo.V1Accounts.GetEnumerator() | ForEach-Object {
+        $parts = $_.Key -split '\|'
+        [PSCustomObject]@{ Account=$parts[0]; Workstation=$parts[1]; Count=$_.Value; Version='NTLMv1'; Risiko='KRITISCH — kryptographisch gebrochen' }
+    } | Sort-Object Count -Descending |
+        Export-Csv (Join-Path $reportDir 'NTLMv1_Usage.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+    Write-Host "  CSV          : NTLMv1_Usage.csv ($($ntlmInfo.V1Count) Anmeldungen)" -ForegroundColor Red
 }
 
 # ZIP
@@ -1482,7 +1697,7 @@ if ((SafeCount $rc4Risk) -gt 0) {
     }
     Write-Host "         Diese Systeme koennen vom KDC RC4-Tickets erhalten." -ForegroundColor Yellow
     Write-Host "         Bei Server 2025 DCs oder nach dem April-2026-Update" -ForegroundColor Yellow
-    Write-Host "         schlagen Authentifizierungen sporadisch fehl." -ForegroundColor Yellow
+    Write-Host "         schlagen Authentifizierungen gelegentlich fehl." -ForegroundColor Yellow
 }
 else {
     Write-Host ""
