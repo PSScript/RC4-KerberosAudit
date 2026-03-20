@@ -886,6 +886,235 @@ function Compress-Report {
     }
 }
 
+function Write-Kreuzpruefung {
+    [CmdletBinding()]
+    param(
+        [hashtable]$Discovery,
+        [hashtable]$Events,
+        [PSCustomObject]$GPO,
+        [array]$AllSystems,
+        [array]$RC4Risk,
+        [array]$DelegRC4
+    )
+
+    Write-Host "`n  --- KREUZPRUEFUNG ---" -ForegroundColor Magenta
+    Write-Host "  Kombination der Befunde zu bedingten Risikobewertungen:`n" -ForegroundColor DarkGray
+
+    $findings = @()
+    $rc4TicketCount = if ($Events) { SafeCount $Events.RC4Tickets } else { 0 }
+    $preAuthCount   = if ($Events) { SafeCount $Events.PreAuthFails } else { 0 }
+    $lockoutCount   = if ($Events) { SafeCount $Events.Lockouts } else { 0 }
+    $correlCount    = if ($Events) { SafeCount $Events.Correlated } else { 0 }
+    $rc4RiskCount   = SafeCount $RC4Risk
+    $delegRC4Count  = SafeCount $DelegRC4
+
+    # ============================================================
+    # 1. RC4 in Accounts vs. RC4 Tickets
+    # ============================================================
+    if ($rc4RiskCount -gt 0 -and $rc4TicketCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=1; Typ='PASSIV'; Bereich='RC4 in Accounts'
+            Befund="$rc4RiskCount Accounts haben RC4 im Attribut, aber der KDC stellt 0 RC4-Tickets aus."
+            Bewertung="Passiv — der KDC waehlt bereits AES. Das Setzen auf Wert 24 (AES-only) formalisiert den Ist-Zustand und ist risikofrei."
+            Bedingung="Wird erst aktiv wenn ein Server 2025 DC promoted wird (anderes KDC-Verhalten) oder Constrained Delegation unter Last RC4 aushandelt."
+        }
+        Write-Host "  [1] PASSIV: RC4 in $rc4RiskCount Accounts" -ForegroundColor Green
+        Write-Host "      Der KDC stellt 0 RC4-Tickets aus — AES wird bereits verwendet." -ForegroundColor DarkGray
+        Write-Host "      Accounts auf Wert 24 setzen formalisiert den Ist-Zustand." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv wenn: Server 2025 DC oder KCD unter Last`n" -ForegroundColor DarkGray
+    }
+    elseif ($rc4RiskCount -gt 0 -and $rc4TicketCount -gt 0) {
+        $findings += [PSCustomObject]@{
+            Nr=1; Typ='AKTIV'; Bereich='RC4 Tickets'
+            Befund="$rc4TicketCount RC4-Tickets in den letzten $Hours Stunden. $rc4RiskCount Accounts mit RC4 im Attribut."
+            Bewertung="Aktiv — der KDC stellt RC4-Tickets aus. Ein Server 2025 System wuerde diese ablehnen."
+            Bedingung="Sofort betroffen bei: Server 2025 DC, Exchange SE Go-Live, oder April-2026-Update."
+        }
+        Write-Host "  [1] AKTIV: $rc4TicketCount RC4-Tickets fliessen!" -ForegroundColor Red
+        Write-Host "      Der KDC stellt aktiv RC4 aus. Accounts auf Wert 24 setzen + PW rotieren." -ForegroundColor Red
+        Write-Host "      -> Betroffen: Server 2025, Exchange SE Go-Live, April-2026-Update`n" -ForegroundColor Red
+    }
+    elseif ($rc4RiskCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=1; Typ='OK'; Bereich='RC4 in Accounts'
+            Befund="Keine Accounts mit RC4/DES gefunden. 0 RC4-Tickets."
+            Bewertung="Kein RC4-Risiko. Umgebung ist bereit fuer Server 2025 und das April-2026-Update."
+            Bedingung="Keine."
+        }
+        Write-Host "  [1] OK: Keine RC4/DES Accounts, keine RC4-Tickets`n" -ForegroundColor Green
+    }
+
+    # ============================================================
+    # 2. GPO vs. Account-Realitaet
+    # ============================================================
+    if ($GPO.HasDES -and $rc4TicketCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=2; Typ='SCHLAFEND'; Bereich='GPO erlaubt DES'
+            Befund="GPO erlaubt DES (Wert $($GPO.Value)), aber es fliessen 0 DES/RC4-Tickets."
+            Bewertung="Schlafend — kein aktives Problem. Die GPO haelt aber die Tuer fuer DES offen."
+            Bedingung="Wird aktiv wenn ein sehr alter Client oder eine Appliance mit DES-only ins Netz kommt, oder wenn ein Angreifer per Kerberoasting gezielt DES erzwingt."
+        }
+        Write-Host "  [2] SCHLAFEND: GPO erlaubt DES (Wert $($GPO.Value))" -ForegroundColor Yellow
+        Write-Host "      Aktuell 0 DES-Tickets — aber DES ist offen fuer Kerberoasting-Angriffe." -ForegroundColor DarkGray
+        Write-Host "      GPO auf 2147483644 (DES entfernen) ist risikofrei da 0 DES-Traffic." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv bei: alter Client/Appliance mit DES-only, oder Angriff`n" -ForegroundColor DarkGray
+    }
+    elseif ($GPO.HasRC4 -and -not $GPO.HasDES -and $rc4TicketCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=2; Typ='UEBERGANG'; Bereich='GPO erlaubt RC4'
+            Befund="GPO erlaubt RC4+AES (kein DES), 0 RC4-Tickets."
+            Bewertung="Akzeptabler Uebergangszustand. RC4 in der GPO ist das Sicherheitsnetz waehrend Accounts auf 24 umgestellt werden."
+            Bedingung="GPO auf 2147483640 (AES-only) erst setzen wenn alle Accounts auf Wert 24 und Kennwoerter rotiert."
+        }
+        Write-Host "  [2] UEBERGANG: GPO erlaubt RC4 aber 0 RC4-Tickets" -ForegroundColor Green
+        Write-Host "      Akzeptabel. GPO auf AES-only erst nach vollstaendiger Account-Bereinigung.`n" -ForegroundColor DarkGray
+    }
+    elseif ($null -eq $GPO.Value -or $GPO.Value -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=2; Typ='SCHLAFEND'; Bereich='GPO nicht gesetzt'
+            Befund="GPO nicht konfiguriert — folgt OS-Default."
+            Bewertung="Schlafend — aktuell kein Problem. Ab April 2026 (CVE-2026-20833) wird der Default auf AES-only geaendert."
+            Bedingung="Wird automatisch aktiv am Patchday April 2026. Alle Accounts mit Wert 0 (NOT SET) werden dann als AES-only behandelt."
+        }
+        Write-Host "  [2] SCHLAFEND: GPO nicht gesetzt — folgt OS-Default" -ForegroundColor Yellow
+        Write-Host "      Ab April 2026 aendert sich der Default automatisch auf AES-only." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv am: Patchday April 2026 (CVE-2026-20833)`n" -ForegroundColor DarkGray
+    }
+
+    # ============================================================
+    # 3. Delegation + RC4 vs. Tickets
+    # ============================================================
+    if ($delegRC4Count -gt 0 -and $rc4TicketCount -eq 0) {
+        $delegNames = ($DelegRC4 | Select-Object -First 3 -ExpandProperty Name) -join ', '
+        $findings += [PSCustomObject]@{
+            Nr=3; Typ='SCHLAFEND'; Bereich='Delegation mit RC4'
+            Befund="$delegRC4Count Delegation-Accounts mit RC4 ($delegNames), aber 0 RC4-Tickets."
+            Bewertung="Schlafend — Constrained Delegation verwendet unter normaler Last AES. Unter hoher Last oder bei bestimmten S4U2Proxy-Konstellationen kann der KDC RC4 fuer das delegierte Ticket waehlen."
+            Bedingung="Wird aktiv bei: hoher Delegations-Last (z.B. Exchange SE Go-Live mit hunderten OWA-Sessions/Minute ueber Kemp), oder wenn der Backend-Account ebenfalls RC4 im Attribut hat."
+        }
+        Write-Host "  [3] SCHLAFEND: $delegRC4Count Delegation-Accounts mit RC4 ($delegNames)" -ForegroundColor Yellow
+        Write-Host "      Aktuell 0 RC4-Tickets — KCD handelt AES aus." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv bei: hoher Delegations-Last (Go-Live), S4U2Proxy Edge Cases`n" -ForegroundColor DarkGray
+    }
+    elseif ($delegRC4Count -gt 0 -and $rc4TicketCount -gt 0) {
+        $findings += [PSCustomObject]@{
+            Nr=3; Typ='AKTIV'; Bereich='Delegation mit RC4'
+            Befund="$delegRC4Count Delegation-Accounts mit RC4 UND $rc4TicketCount RC4-Tickets."
+            Bewertung="Aktiv — Delegation-Accounts muessen sofort auf AES-only gesetzt werden. Keytabs mit AES neu erstellen."
+            Bedingung="Betrifft alle Dienste hinter dem LoadBalancer/Proxy."
+        }
+        Write-Host "  [3] AKTIV: Delegation mit RC4 UND RC4-Tickets!" -ForegroundColor Red
+        Write-Host "      Delegation-Accounts sofort auf 24 + Keytabs mit AES neu erstellen.`n" -ForegroundColor Red
+    }
+
+    # ============================================================
+    # 4. PreAuth Failures vs. RC4
+    # ============================================================
+    if ($preAuthCount -gt 50 -and $rc4TicketCount -eq 0 -and $correlCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=4; Typ='GETRENNT'; Bereich='PreAuth Fehler'
+            Befund="$preAuthCount Pre-Auth Fehler, aber 0 RC4-Tickets und 0 korrelierte Lockouts."
+            Bewertung="Getrennt vom RC4-Thema — die Fehler sind Credential-Hygiene (falsche Passwoerter, abgelaufene Accounts). Kein Kerberos-Encryption-Problem."
+            Bedingung="Wird RC4-relevant wenn: nach April-2026-Update die Fallback-Kette (Kerberos->NTLM) haeufiger getriggert wird und die falschen Credentials dann zu Lockouts fuehren."
+        }
+        Write-Host "  [4] GETRENNT: $preAuthCount PreAuth-Fehler sind kein RC4-Problem" -ForegroundColor Green
+        Write-Host "      0 RC4-Tickets, 0 korrelierte Lockouts. Ursache: Credential-Hygiene." -ForegroundColor DarkGray
+        Write-Host "      -> Wird RC4-relevant wenn: April-2026-Update die Fallback-Kette verschaerft`n" -ForegroundColor DarkGray
+    }
+    elseif ($preAuthCount -gt 50 -and $correlCount -gt 0) {
+        $findings += [PSCustomObject]@{
+            Nr=4; Typ='AKTIV'; Bereich='Fallback-Kette'
+            Befund="$preAuthCount Pre-Auth Fehler mit $correlCount korrelierten Lockouts."
+            Bewertung="Aktiv — Kerberos-Fehler loesen NTLM-Fallback aus, der zu Kontosperrungen fuehrt. Die betroffenen Accounts haben gespeicherte alte Credentials."
+            Bedingung="Verschlechtert sich mit Server 2025 DC (mehr Kerberos-Fehler durch RC4-Ablehnung) und nach April-2026-Update."
+        }
+        Write-Host "  [4] AKTIV: $correlCount Lockouts durch Kerberos-Fallback-Kette!" -ForegroundColor Red
+        Write-Host "      Kerberos scheitert -> NTLM -> altes Passwort -> Lockout." -ForegroundColor Red
+        Write-Host "      -> Verschlechtert sich mit: Server 2025 DC, April-2026-Update`n" -ForegroundColor Red
+    }
+
+    # ============================================================
+    # 5. SMB Signing (aus GPO / bekannter Zustand)
+    # ============================================================
+    # Hinweis: SMB-Daten kommen aus Check-Server2025Defaults, nicht aus diesem Skript.
+    # Wir koennen aber den Hinweis geben.
+    $findings += [PSCustomObject]@{
+        Nr=5; Typ='HINWEIS'; Bereich='SMB Signing'
+        Befund="SMB Signing wird von diesem Skript nicht geprueft."
+        Bewertung="SMB Signing Mismatch ist ein separates Risiko bei Server 2025 Einfuehrung. Pruefen mit Check-Server2025Defaults-v4.ps1."
+        Bedingung="Wenn alle Server konsistent True/True haben: kein Risiko. Wenn gemischt: Drucker und Appliances pruefen."
+    }
+    Write-Host "  [5] HINWEIS: SMB Signing nicht in diesem Skript" -ForegroundColor DarkGray
+    Write-Host "      Separat pruefen mit Check-Server2025Defaults-v4.ps1`n" -ForegroundColor DarkGray
+
+    # ============================================================
+    # 6. SAP-Indikation
+    # ============================================================
+    if ($rc4TicketCount -eq 0) {
+        $findings += [PSCustomObject]@{
+            Nr=6; Typ='IMPLIZIT MITIGIERT'; Bereich='SAP Kerberos'
+            Befund="0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."
+            Bewertung="Implizit mitigiert — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
+            Bedingung="Keine weitere Aktion noetig solange der SAP Kernel nicht downgraded wird."
+        }
+        Write-Host "  [6] IMPLIZIT MITIGIERT: SAP" -ForegroundColor Green
+        Write-Host "      0 RC4-Tickets — SAP funktioniert mit AES. Kein RC4-Risiko fuer SAP." -ForegroundColor DarkGray
+        Write-Host "      -> Bleibt mitigiert solange SAP Kernel nicht downgraded wird`n" -ForegroundColor DarkGray
+    }
+
+    # ============================================================
+    # 7. Maschinen-Account Passwort-Rotation
+    # ============================================================
+    $machineAccts = @()
+    if ($Events -and $Events.PreAuthFails) {
+        $machineAccts = @($Events.PreAuthFails | Where-Object { $_.Account -match '\$$' -and $_.Status -eq '0x18' } | Select-Object -ExpandProperty Account -Unique)
+    }
+    if ($machineAccts.Count -gt 0) {
+        $machineList = ($machineAccts | Select-Object -First 3) -join ', '
+        $findings += [PSCustomObject]@{
+            Nr=7; Typ='SCHLAFEND'; Bereich='Maschinenkennwort'
+            Befund="$($machineAccts.Count) Maschinen-Accounts mit Pre-Auth Fehlern ($machineList)."
+            Bewertung="Schlafend — Kennwort-Rotation funktioniert nicht sauber. Bei einem Server 2025 DC generiert die Rotation nur AES-Keys, aeltere DCs erwarten RC4-Keys."
+            Bedingung="Wird aktiv ca. 30 Tage nach Server 2025 DC Promotion. Server fallen einzeln aus, ueber Tage verteilt."
+        }
+        Write-Host "  [7] SCHLAFEND: $($machineAccts.Count) Maschinen-Accounts mit PreAuth-Fehler" -ForegroundColor Yellow
+        Write-Host "      $machineList" -ForegroundColor Yellow
+        Write-Host "      Kennwort-Rotation nicht sauber. Bei 2025 DC: AES-only Keys → Ausfall." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv: ~30 Tage nach Server 2025 DC Promotion`n" -ForegroundColor DarkGray
+    }
+
+    # ============================================================
+    # 8. NOT SET Accounts (Wert 0) vs. April-Update
+    # ============================================================
+    $notSetCount = ($AllSystems | Where-Object { $_.EncCategory -eq 'NOT_SET' } | Measure-Object).Count
+    if ($notSetCount -gt 0) {
+        $findings += [PSCustomObject]@{
+            Nr=8; Typ='SCHLAFEND'; Bereich='NOT SET Accounts'
+            Befund="$notSetCount Accounts mit Wert 0 (NOT SET) — folgen dem Domain-Default."
+            Bewertung="Schlafend — aktuell erlaubt der Default RC4+AES. Ab April 2026 wird der Default auf AES-only geaendert."
+            Bedingung="Wird automatisch aktiv am Patchday April 2026. Wenn diese Accounts RC4-Clients bedienen, schlagen deren Authentifizierungen fehl."
+        }
+        Write-Host "  [8] SCHLAFEND: $notSetCount Accounts mit Wert 0 (NOT SET)" -ForegroundColor Yellow
+        Write-Host "      Folgen dem Domain-Default. Ab April 2026: Default = AES-only." -ForegroundColor DarkGray
+        Write-Host "      -> Wird aktiv am: Patchday April 2026 (automatisch)`n" -ForegroundColor DarkGray
+    }
+
+    # ============================================================
+    # Zusammenfassung
+    # ============================================================
+    $aktiv     = @($findings | Where-Object { $_.Typ -eq 'AKTIV' })
+    $schlafend = @($findings | Where-Object { $_.Typ -eq 'SCHLAFEND' })
+    $passiv    = @($findings | Where-Object { $_.Typ -match 'PASSIV|MITIGIERT|GETRENNT|UEBERGANG' })
+
+    Write-Host "  --- ZUSAMMENFASSUNG KREUZPRUEFUNG ---" -ForegroundColor Magenta
+    Write-Host "  Aktive Risiken  : $($aktiv.Count)" -ForegroundColor $(if ($aktiv.Count -gt 0) {'Red'} else {'Green'})
+    Write-Host "  Schlafende      : $($schlafend.Count)" -ForegroundColor $(if ($schlafend.Count -gt 0) {'Yellow'} else {'Green'})
+    Write-Host "  Passiv/Mitigiert: $($passiv.Count)" -ForegroundColor Green
+    Write-Host ""
+
+    return $findings
+}
+
 function Send-Report {
     [CmdletBinding()]
     param(
@@ -951,9 +1180,35 @@ if (-not $SkipEvents) {
     $events = Get-RC4TicketsBySystem -MsBack $msBack -Max $MaxEvents -KnownSystems $knownNames
 }
 
-# Phase 3: Export
+# Phase 3: Cross-check
+$crossCheck = Write-Kreuzpruefung -Discovery $discovery -Events $events -GPO $gpo `
+    -AllSystems $allSystems -RC4Risk $rc4Risk -DelegRC4 $delegRC4
+
+# Phase 4: Export
 Write-Host "`n=== EXPORT ===" -ForegroundColor Cyan
 $report = Export-ExcelReport -Discovery $discovery -Events $events -GPO $gpo -Path $reportDir
+
+# Export cross-check findings
+if ((SafeCount $crossCheck) -gt 0) {
+    $xlPath = Join-Path $reportDir "RC4_${domainShort}_Report.xlsx"
+    $hasExcel = $false
+    try { Import-Module ImportExcel -EA Stop; $hasExcel = $true } catch {}
+    if ($hasExcel) {
+        $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
+            Export-Excel -Path $xlPath -WorksheetName 'Kreuzpruefung' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
+                New-ConditionalText 'AKTIV'    -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+                New-ConditionalText 'PASSIV'   -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                New-ConditionalText 'MITIGIERT' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                New-ConditionalText 'GETRENNT' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
+                New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+            )
+        Write-Host "  Excel-Tab    : Kreuzpruefung" -ForegroundColor Green
+    }
+    $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
+        Export-Csv (Join-Path $reportDir 'Kreuzpruefung.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+    Write-Host "  CSV          : Kreuzpruefung.csv" -ForegroundColor Green
+}
 
 # ZIP
 $zip = Compress-Report -FolderPath $reportDir
