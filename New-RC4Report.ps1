@@ -46,6 +46,25 @@ $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
 
 function SafeCount { param($C) if ($null -eq $C) {0} elseif ($C -is [array]) {$C.Length} else {1} }
 
+function Normalize-TypLabel {
+    param([string]$Typ)
+    switch ($Typ) {
+        'AKTIV'              { 'Fehler' }
+        'KRITISCH'           { 'Fehler' }
+        'SCHLAFEND'          { 'Warnung' }
+        'UEBERGANG'          { 'Warnung' }
+        'PRUEFEN'            { 'Warnung' }
+        'PASSIV'             { 'Information' }
+        'IMPLIZIT MITIGIERT' { 'Information' }
+        'OHNE FOLGEN'        { 'Information' }
+        'OHNE_FOLGEN'        { 'Information' }
+        'GETRENNT'           { 'Information' }
+        'HINWEIS'            { 'Information' }
+        'OK'                 { 'Information' }
+        default              { $Typ }
+    }
+}
+
 function Import-OptionalCsv {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return @() }
@@ -349,6 +368,8 @@ if ((SafeCount $ntlmV1) -gt 0) {
 }
 
 # --- Priority sort: Fehler first, then Warnung, then Information ---
+# Normalize any old labels (from older Discover CSVs or future changes)
+foreach ($f in $findings) { $f.Typ = Normalize-TypLabel $f.Typ }
 $typPrio = @{ 'Fehler'=1; 'Warnung'=2; 'Information'=3 }
 $findings = @($findings | Sort-Object { if ($typPrio[$_.Typ]) { $typPrio[$_.Typ] } else { 99 } }, Nr)
 

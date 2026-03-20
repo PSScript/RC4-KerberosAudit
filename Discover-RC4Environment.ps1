@@ -1304,6 +1304,33 @@ function Send-Report {
     }
 }
 
+function Normalize-TypLabel {
+    <#
+    .SYNOPSIS
+        Normalisiert alte Typ-Labels zu Event-Log-Levels.
+        Aeltere CSVs enthalten SCHLAFEND/PASSIV/AKTIV — neue verwenden Fehler/Warnung/Information.
+    #>
+    param([string]$Typ)
+    switch ($Typ) {
+        'AKTIV'              { 'Fehler' }
+        'KRITISCH'           { 'Fehler' }
+        'SCHLAFEND'          { 'Warnung' }
+        'UEBERGANG'          { 'Warnung' }
+        'PRUEFEN'            { 'Warnung' }
+        'PASSIV'             { 'Information' }
+        'IMPLIZIT MITIGIERT' { 'Information' }
+        'OHNE FOLGEN'        { 'Information' }
+        'OHNE_FOLGEN'        { 'Information' }
+        'GETRENNT'           { 'Information' }
+        'HINWEIS'            { 'Information' }
+        'OK'                 { 'Information' }
+        'Fehler'             { 'Fehler' }
+        'Warnung'            { 'Warnung' }
+        'Information'        { 'Information' }
+        default              { $Typ }
+    }
+}
+
 function Import-PreviousReport {
     [CmdletBinding()]
     param([string]$Path)
