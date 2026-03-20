@@ -39,10 +39,15 @@
 .PARAMETER SmtpServer
     SMTP-Server fuer den E-Mail-Versand.
 
+.PARAMETER ReassessFrom
+    Pfad zu einem vorherigen Report-Ordner (z.B. C:\Temp\RC4_CONTOSO_20260319_162051).
+    Laedt die CSVs und fuehrt nur Kreuzpruefung und Bewertung durch, ohne AD-Abfragen oder Event-Log-Analyse.
+
 .EXAMPLE
     .\Discover-RC4Environment.ps1
     .\Discover-RC4Environment.ps1 -Hours 72 -MaxEvents 2000
     .\Discover-RC4Environment.ps1 -SkipEvents
+    .\Discover-RC4Environment.ps1 -ReassessFrom 'C:\Temp\RC4_CONTOSO_20260319_162051'
     .\Discover-RC4Environment.ps1 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
 
 .NOTES
@@ -57,6 +62,7 @@ param(
     [int]$Hours = 24,
     [int]$MaxEvents = 1000,
     [string]$ReportPath = 'C:\Temp',
+    [string]$ReassessFrom,
     [switch]$SkipEvents,
     [switch]$SendMail,
     [string]$MailTo,
@@ -1137,9 +1143,190 @@ function Send-Report {
     }
 }
 
+function Import-PreviousReport {
+    [CmdletBinding()]
+    param([string]$Path)
+
+    Write-Host "`n=== IMPORT AUS VORHERIGEM REPORT ===" -ForegroundColor Cyan
+    Write-Host "  Quelle: $Path" -ForegroundColor White
+
+    if (-not (Test-Path $Path)) {
+        Write-Host "  FEHLER: Pfad nicht gefunden: $Path" -ForegroundColor Red
+        return $null
+    }
+
+    $imported = @{
+        Discovery = @{ Citrix=@(); Igel=@(); NonWindows=@(); Delegation=@() }
+        Events    = @{ RC4Tickets=@(); PreAuthFails=@(); LogonFails=@(); Lockouts=@(); Correlated=@() }
+        GPO       = $null
+    }
+
+    # CSV-Dateien laden
+    $csvMap = @{
+        'Citrix'       = @{ Target='Discovery'; Key='Citrix' }
+        'Igel'         = @{ Target='Discovery'; Key='Igel' }
+        'NonWindows'   = @{ Target='Discovery'; Key='NonWindows' }
+        'Delegation'   = @{ Target='Discovery'; Key='Delegation' }
+        'GPO_Policy'   = @{ Target='GPO';       Key=$null }
+        'RC4Tickets'   = @{ Target='Events';    Key='RC4Tickets' }
+        'PreAuthFails' = @{ Target='Events';    Key='PreAuthFails' }
+        'LogonFails'   = @{ Target='Events';    Key='LogonFails' }
+        'Lockouts'     = @{ Target='Events';    Key='Lockouts' }
+        'Correlated'   = @{ Target='Events';    Key='Correlated' }
+    }
+
+    $loadedFiles = 0
+    foreach ($name in $csvMap.Keys) {
+        $csvPath = Join-Path $Path "${name}.csv"
+        if (-not (Test-Path $csvPath)) { continue }
+
+        try {
+            $data = @(Import-Csv $csvPath -Delimiter ';' -Encoding UTF8)
+            $map = $csvMap[$name]
+
+            if ($map.Target -eq 'GPO') {
+                # GPO needs reconstruction as object with typed properties
+                $row = $data | Select-Object -First 1
+                $imported.GPO = [PSCustomObject]@{
+                    Server         = $row.Server
+                    Value          = if ($row.Value -and $row.Value -ne '') { [int]$row.Value } else { $null }
+                    HasDES         = $row.HasDES -eq 'True'
+                    HasRC4         = $row.HasRC4 -eq 'True'
+                    HasAES128      = $row.HasAES128 -eq 'True'
+                    HasAES256      = $row.HasAES256 -eq 'True'
+                    Recommendation = $row.Recommendation
+                    Bewertung      = $row.Bewertung
+                }
+            }
+            elseif ($map.Target -eq 'Discovery') {
+                $imported.Discovery[$map.Key] = $data
+            }
+            elseif ($map.Target -eq 'Events') {
+                $imported.Events[$map.Key] = $data
+            }
+
+            $loadedFiles++
+            Write-Status "  $name" "$($data.Count) Eintraege" 'Green'
+        }
+        catch {
+            Write-Host "  $name.csv: Fehler beim Import — $_" -ForegroundColor Red
+        }
+    }
+
+    # GPO Fallback wenn keine CSV
+    if (-not $imported.GPO) {
+        Write-Host "  GPO_Policy.csv nicht gefunden — lese GPO live vom lokalen System" -ForegroundColor Yellow
+        $imported.GPO = Get-KerberosGPOPolicy
+    }
+
+    Write-Host "  $loadedFiles CSV-Dateien geladen" -ForegroundColor Cyan
+
+    if ($loadedFiles -eq 0) {
+        Write-Host "  FEHLER: Keine CSVs gefunden in $Path" -ForegroundColor Red
+        return $null
+    }
+
+    return $imported
+}
+
 #endregion
 
 #region ============ MAIN ============
+
+if ($ReassessFrom) {
+    # =============================================
+    # REASSESS MODE: Load from previous CSVs
+    # =============================================
+    Write-Host ""
+    Write-Host "=================================================================" -ForegroundColor Magenta
+    Write-Host "  RC4 Environment Discovery v1.3 — REASSESSMENT" -ForegroundColor Magenta
+    Write-Host "  Quelle: $ReassessFrom" -ForegroundColor Magenta
+    Write-Host "=================================================================" -ForegroundColor Magenta
+
+    $prev = Import-PreviousReport -Path $ReassessFrom
+    if (-not $prev) {
+        Write-Host "`n  Abbruch — keine Daten geladen." -ForegroundColor Red
+        return
+    }
+
+    # Use imported data
+    $discovery = $prev.Discovery
+    $events    = $prev.Events
+    $gpo       = $prev.GPO
+
+    $citrix = @($discovery.Citrix)
+    $igel   = @($discovery.Igel)
+    $nonwin = @($discovery.NonWindows)
+    $deleg  = @($discovery.Delegation)
+
+    # Detect domain from source path
+    $folderName = Split-Path $ReassessFrom -Leaf
+    if ($folderName -match 'RC4_([^_]+)_') { $domainShort = $Matches[1] }
+    if (-not $domainFQDN -or $domainFQDN -eq 'UNKNOWN') { $domainFQDN = $domainShort }
+
+    # Reassess report directory
+    $reportDir = Join-Path $ReportPath "RC4_${domainShort}_Reassess_${ts}"
+    if (-not (Test-Path $reportDir)) { New-Item -Path $reportDir -ItemType Directory -Force | Out-Null }
+
+    # Summary
+    $allSystems = @() + $citrix + $igel + $nonwin
+    $rc4Risk = @($allSystems | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+    $delegRC4 = @($deleg | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
+
+    Write-Host "`n=== IMPORTIERTE DATEN ===" -ForegroundColor Cyan
+    Write-Status "Systeme gesamt" "$((SafeCount $allSystems))"
+    Write-Status "davon mit RC4/DES" "$((SafeCount $rc4Risk))" $(if ((SafeCount $rc4Risk) -gt 0) {'Red'} else {'Green'})
+    Write-Status "Delegation-Accounts mit RC4/DES" "$((SafeCount $delegRC4))" $(if ((SafeCount $delegRC4) -gt 0) {'Red'} else {'Green'})
+    Write-Status "RC4 Tickets" "$((SafeCount $events.RC4Tickets))" $(if ((SafeCount $events.RC4Tickets) -gt 0) {'Red'} else {'Green'})
+    Write-Status "PreAuth Fehler" "$((SafeCount $events.PreAuthFails))"
+    Write-Status "Lockouts" "$((SafeCount $events.Lockouts))"
+    Write-Status "Korrelierte Lockouts" "$((SafeCount $events.Correlated))" $(if ((SafeCount $events.Correlated) -gt 0) {'Red'} else {'Green'})
+
+    # Cross-check (the whole point of reassessment)
+    $crossCheck = Write-Kreuzpruefung -Discovery $discovery -Events $events -GPO $gpo `
+        -AllSystems $allSystems -RC4Risk $rc4Risk -DelegRC4 $delegRC4
+
+    # Export reassessment
+    Write-Host "`n=== EXPORT (Reassessment) ===" -ForegroundColor Cyan
+    $report = Export-ExcelReport -Discovery $discovery -Events $events -GPO $gpo -Path $reportDir
+
+    if ((SafeCount $crossCheck) -gt 0) {
+        $xlPath = Join-Path $reportDir "RC4_${domainShort}_Report.xlsx"
+        $hasExcel = $false
+        try { Import-Module ImportExcel -EA Stop; $hasExcel = $true } catch {}
+        if ($hasExcel) {
+            $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
+                Export-Excel -Path $xlPath -WorksheetName 'Kreuzpruefung' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
+                    New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                    New-ConditionalText 'SCHLAFEND'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+                    New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                    New-ConditionalText 'MITIGIERT'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                    New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
+                    New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                )
+            Write-Host "  Excel-Tab    : Kreuzpruefung" -ForegroundColor Green
+        }
+        $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
+            Export-Csv (Join-Path $reportDir 'Kreuzpruefung.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+        Write-Host "  CSV          : Kreuzpruefung.csv" -ForegroundColor Green
+    }
+
+    $zip = Compress-Report -FolderPath $reportDir
+
+    Write-Host ""
+    Write-Host "=================================================================" -ForegroundColor Magenta
+    Write-Host "  Reassessment abgeschlossen." -ForegroundColor Magenta
+    Write-Host "  Quelle  : $ReassessFrom" -ForegroundColor White
+    Write-Host "  Report  : $reportDir" -ForegroundColor White
+    if ($zip) { Write-Host "  ZIP     : $zip" -ForegroundColor White }
+    Write-Host "=================================================================" -ForegroundColor Magenta
+    Write-Host ""
+    return
+}
+
+# =============================================
+# NORMAL MODE: Full scan
+# =============================================
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
