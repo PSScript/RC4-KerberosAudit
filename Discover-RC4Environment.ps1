@@ -43,6 +43,9 @@
     Pfad zu einem vorherigen Report-Ordner (z.B. C:\Temp\RC4_CONTOSO_20260319_162051).
     Laedt die CSVs und fuehrt nur Kreuzpruefung und Bewertung durch, ohne AD-Abfragen oder Event-Log-Analyse.
 
+.PARAMETER ImportOnly
+    Laedt nur die Funktionen, fuehrt keinen Scan aus. Ermoeglicht Dot-Sourcing und selektive Nutzung.
+
 .EXAMPLE
     .\Discover-RC4Environment.ps1
     .\Discover-RC4Environment.ps1 -Hours 72 -MaxEvents 2000
@@ -50,8 +53,14 @@
     .\Discover-RC4Environment.ps1 -ReassessFrom 'C:\Temp\RC4_CONTOSO_20260319_162051'
     .\Discover-RC4Environment.ps1 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
 
+    # Dot-Sourcing: Funktionen laden, kein Scan
+    . .\Discover-RC4Environment.ps1 -ImportOnly
+    $citrix = Get-CitrixInfrastructure
+    $deleg  = Get-DelegationAccounts
+    $gpo    = Get-KerberosGPOPolicy
+
 .NOTES
-    Version : 1.4
+    Version : 1.5
     Datum   : 2026-03
     Ref     : https://learn.microsoft.com/en-us/windows-server/security/kerberos/detect-remediate-rc4-kerberos
               https://borncity.com/blog/2025/09/27/windows-server-2025-als-dc-finger-weg-bei-gemischten-umgebungen-rc4-problem/
@@ -64,6 +73,7 @@ param(
     [string]$ReportPath = 'C:\Temp',
     [string]$ReassessFrom,
     [switch]$SkipEvents,
+    [switch]$ImportOnly,
     [switch]$SendMail,
     [string]$MailTo,
     [string]$MailFrom,
@@ -1233,13 +1243,35 @@ function Import-PreviousReport {
 
 #region ============ MAIN ============
 
+# Execution guard: -ImportOnly or dot-sourcing detection
+$script:_IsDotSourced = $false
+try {
+    if ($MyInvocation.InvocationName -eq '.' -or $MyInvocation.Line -match '^\.\s') {
+        $script:_IsDotSourced = $true
+    }
+} catch {}
+
+if ($ImportOnly) {
+    Write-Host "  Funktionen geladen (-ImportOnly). Kein Scan." -ForegroundColor Cyan
+    Write-Host "  Verfuegbare Funktionen:" -ForegroundColor DarkGray
+    Write-Host "    Get-CitrixInfrastructure    Get-IgelDevices" -ForegroundColor DarkGray
+    Write-Host "    Get-NonWindowsDevices       Get-DelegationAccounts" -ForegroundColor DarkGray
+    Write-Host "    Get-KerberosGPOPolicy       Get-RC4TicketsBySystem" -ForegroundColor DarkGray
+    Write-Host "    Write-Kreuzpruefung         Import-PreviousReport" -ForegroundColor DarkGray
+    Write-Host "    Export-ExcelReport          Export-ToCsv" -ForegroundColor DarkGray
+    Write-Host "    Get-Bewertung               Get-DelegationBewertung" -ForegroundColor DarkGray
+    Write-Host "    Get-EncCategory             Get-EncLabel  SafeCount" -ForegroundColor DarkGray
+}
+elseif (-not $script:_IsDotSourced) {
+# === SCAN/REASSESS EXECUTION (only when run directly) ===
+
 if ($ReassessFrom) {
     # =============================================
     # REASSESS MODE: Load from previous CSVs
     # =============================================
     Write-Host ""
     Write-Host "=================================================================" -ForegroundColor Magenta
-    Write-Host "  RC4 Environment Discovery v1.4 — REASSESSMENT" -ForegroundColor Magenta
+    Write-Host "  RC4 Environment Discovery v1.5 — REASSESSMENT" -ForegroundColor Magenta
     Write-Host "  Quelle: $ReassessFrom" -ForegroundColor Magenta
     Write-Host "=================================================================" -ForegroundColor Magenta
 
@@ -1330,7 +1362,7 @@ if ($ReassessFrom) {
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  RC4 Environment Discovery v1.4" -ForegroundColor Cyan
+Write-Host "  RC4 Environment Discovery v1.5" -ForegroundColor Cyan
 Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
 Write-Host "  Zeitraum: letzte $Hours Stunden auf $(hostname)" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
@@ -1530,5 +1562,7 @@ Write-Host "  - https://www.msxfaq.de/windows/kerberos/kerberos_rc4_abschaltung.
 Write-Host "  - https://www.microsoft.com/en-us/windows-server/blog/2025/12/03/beyond-rc4-for-windows-authentication/" -ForegroundColor DarkGray
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host ""
+
+} # end elseif (-not $script:_IsDotSourced)
 
 #endregion
