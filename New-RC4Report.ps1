@@ -13,7 +13,7 @@
     Laeuft auf jedem Windows-System mit PowerShell 5.1.
 
 .PARAMETER ReportPath
-    Pfad zum Ordner mit den CSVs (z.B. C:\Temp\RC4_DATAGROUP_20260319_162051)
+    Pfad zum Ordner mit den CSVs (z.B. C:\Temp\RC4_CONTOSO_20260319_162051)
 
 .PARAMETER OutputPath
     Zielordner fuer den Report. Standard: ReportPath\Report_[timestamp]
@@ -22,7 +22,7 @@
     Anzeigename der Domaene. Wird aus dem Ordnernamen erkannt wenn nicht angegeben.
 
 .EXAMPLE
-    .\New-RC4Report.ps1 -ReportPath 'C:\use23\RC4_DATAGROUP_20260319_162051'
+    .\New-RC4Report.ps1 -ReportPath 'C:\Temp\RC4_CONTOSO_20260319_162051'
     .\New-RC4Report.ps1 -ReportPath 'C:\Temp\RC4_DGBRS_20260319_162058' -DomainLabel 'DGBRS'
 
 .NOTES
