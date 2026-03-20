@@ -237,26 +237,24 @@ $prev   = Import-PreviousReport -Path 'C:\Temp\RC4_CONTOSO_...'
 
 | Nr | Check | Typ-Möglichkeiten |
 |---|---|---|
-| 1 | RC4 in Accounts vs. RC4 Tickets | PASSIV / AKTIV / OK |
-| 2 | GPO vs. Account-Realität | SCHLAFEND / ÜBERGANG / OK |
-| 3 | Delegation + RC4 vs. Tickets | SCHLAFEND / AKTIV |
-| 4 | PreAuth vs. RC4 | GETRENNT / AKTIV |
+| 1 | RC4 in Accounts vs. RC4 Tickets | Information / Fehler |
+| 2 | GPO vs. Account-Realität | Warnung / Information |
+| 3 | Delegation + RC4 vs. Tickets | Warnung / Fehler |
+| 4 | PreAuth vs. RC4 | Information / Fehler |
 | 5 | SMB Signing (Verweis) | HINWEIS |
 | 6 | SAP Indikation | HINWEIS / PRÜFEN |
-| 7 | Maschinenkonto-Rotation | SCHLAFEND |
-| 8 | NOT SET Accounts vs. April 2026 | SCHLAFEND |
-| 9 | KDCSVC Audit Events 201-209 (seit Jan 2026 CU) | AKTIV / OK / SCHLAFEND |
-| 10 | NTLMv1 vs NTLMv2 | AKTIV / HINWEIS |
+| 7 | Maschinenkonto-Rotation | Warnung |
+| 8 | NOT SET Accounts vs. April 2026 | Warnung |
+| 9 | KDCSVC Audit Events 201-209 (seit Jan 2026 CU) | AKTIV / OK / Warnung |
+| 10 | NTLMv1 vs NTLMv2 | Fehler / Information |
 
 #### Typ-Bedeutungen
 
-| Typ | Bedeutung |
-|---|---|
-| **AKTIV** | Jetzt ein Problem. Sofort handeln. |
-| **SCHLAFEND** | Kein Problem heute, aber ein konkreter Trigger aktiviert es. |
-| **PASSIV** | Formell vorhanden, faktisch ohne Auswirkung. Aufräumen risikofrei. |
-| **HINWEIS** | Durch andere Befunde ausgeschlossen (z.B. SAP bei 0 RC4-Tickets). |
-| **GETRENNT** | Befund existiert aber hat eine andere Ursache als RC4. |
+| Typ | Farbe | Bedeutung |
+|---|---|---|
+| **Fehler** | Rot | Sofort handeln. |
+| **Warnung** | Gelb | Vor April 2026 handeln. |
+| **Information** | Grün | Zur Kenntnis. Kein Handlungsbedarf oder Aufräumen risikofrei. |
 
 ### Erzeugte Dateien
 

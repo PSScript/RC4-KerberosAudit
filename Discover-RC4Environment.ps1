@@ -913,7 +913,7 @@ function Export-ExcelReport {
         }
         $overviewData += [PSCustomObject]@{
             Bereich='Kerberos GPO'; Wert=$GPO.Value; Status=$(
-                if ($GPO.HasDES) {'KRITISCH'} elseif ($GPO.HasRC4) {'WARNUNG'} else {'OK'}
+                if ($GPO.HasDES) {'Fehler'} elseif ($GPO.HasRC4) {'Warnung'} else {'Information'}
             ); Hinweis=$GPO.Recommendation
         }
 
@@ -923,7 +923,7 @@ function Export-ExcelReport {
             $rc4Items = @($items | Where-Object { $_.EncCategory -in @('RC4_ONLY','RC4_AES','DES_PRESENT') })
             $total = SafeCount $items
             $rc4Count = SafeCount $rc4Items
-            $status = if ($rc4Count -gt 0) {'WARNUNG'} elseif ($total -gt 0) {'OK'} else {'Leer'}
+            $status = if ($rc4Count -gt 0) {'Warnung'} elseif ($total -gt 0) {'Information'} else {'Leer'}
             $overviewData += [PSCustomObject]@{
                 Bereich=$key; Wert="$total gefunden, $rc4Count mit RC4/DES"
                 Status=$status; Hinweis=''
@@ -934,35 +934,35 @@ function Export-ExcelReport {
         if ($Events) {
             $overviewData += [PSCustomObject]@{
                 Bereich='RC4 Service Tickets'; Wert=(SafeCount $Events.RC4Tickets)
-                Status=$(if ((SafeCount $Events.RC4Tickets) -gt 0) {'KRITISCH'} else {'OK'})
+                Status=$(if ((SafeCount $Events.RC4Tickets) -gt 0) {'Fehler'} else {'Information'})
                 Hinweis='Event 4769 mit EncType 0x17'
             }
             $overviewData += [PSCustomObject]@{
                 Bereich='Pre-Auth Fehler'; Wert=(SafeCount $Events.PreAuthFails)
-                Status=$(if ((SafeCount $Events.PreAuthFails) -gt 50) {'WARNUNG'} elseif ((SafeCount $Events.PreAuthFails) -gt 0) {'Info'} else {'OK'})
+                Status=$(if ((SafeCount $Events.PreAuthFails) -gt 50) {'Warnung'} elseif ((SafeCount $Events.PreAuthFails) -gt 0) {'Info'} else {'Information'})
                 Hinweis='Event 4771'
             }
             $overviewData += [PSCustomObject]@{
                 Bereich='Failed Logons'; Wert=(SafeCount $Events.LogonFails)
-                Status=$(if ((SafeCount $Events.LogonFails) -gt 100) {'WARNUNG'} elseif ((SafeCount $Events.LogonFails) -gt 0) {'Info'} else {'OK'})
+                Status=$(if ((SafeCount $Events.LogonFails) -gt 100) {'Warnung'} elseif ((SafeCount $Events.LogonFails) -gt 0) {'Info'} else {'Information'})
                 Hinweis='Event 4625'
             }
             $overviewData += [PSCustomObject]@{
                 Bereich='Account Lockouts'; Wert=(SafeCount $Events.Lockouts)
-                Status=$(if ((SafeCount $Events.Lockouts) -gt 10) {'KRITISCH'} elseif ((SafeCount $Events.Lockouts) -gt 0) {'WARNUNG'} else {'OK'})
+                Status=$(if ((SafeCount $Events.Lockouts) -gt 10) {'Fehler'} elseif ((SafeCount $Events.Lockouts) -gt 0) {'Warnung'} else {'Information'})
                 Hinweis='Event 4740'
             }
             $overviewData += [PSCustomObject]@{
                 Bereich='Korrelierte Lockouts'; Wert=(SafeCount $Events.Correlated)
-                Status=$(if ((SafeCount $Events.Correlated) -gt 0) {'KRITISCH'} else {'OK'})
+                Status=$(if ((SafeCount $Events.Correlated) -gt 0) {'Fehler'} else {'Information'})
                 Hinweis='Kerberos-Fehler innerhalb 120s vor Lockout'
             }
         }
 
         $overviewData | Export-Excel -Path $xlPath -WorksheetName 'Uebersicht' -AutoSize -FreezeTopRow -BoldTopRow -ConditionalText $(
-            New-ConditionalText 'KRITISCH' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
-            New-ConditionalText 'WARNUNG'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-            New-ConditionalText 'OK'       -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+            New-ConditionalText 'Fehler' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+            New-ConditionalText 'Warnung'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+            New-ConditionalText 'Information'       -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
         )
 
         # --- Data Tabs ---
@@ -1080,7 +1080,7 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($rc4RiskCount -gt 0 -and $rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=1; Typ='PASSIV'; Bereich='RC4 in Accounts'
+            Nr=1; Typ='Information'; Bereich='RC4 in Accounts'
             Befund="$rc4RiskCount Accounts haben RC4 im Attribut, aber der KDC stellt 0 RC4-Tickets aus."
             Bewertung="Passiv — der KDC waehlt bereits AES. Das Setzen auf Wert 24 (AES-only) formalisiert den Ist-Zustand und ist risikofrei."
             Bedingung="Wird erst aktiv wenn ein Server 2025 DC promoted wird (anderes KDC-Verhalten) oder Constrained Delegation unter Last RC4 aushandelt."
@@ -1092,7 +1092,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($rc4RiskCount -gt 0 -and $rc4TicketCount -gt 0) {
         $findings += [PSCustomObject]@{
-            Nr=1; Typ='AKTIV'; Bereich='RC4 Tickets'
+            Nr=1; Typ='Fehler'; Bereich='RC4 Tickets'
             Befund="$rc4TicketCount RC4-Tickets in den letzten $Hours Stunden. $rc4RiskCount Accounts mit RC4 im Attribut."
             Bewertung="Aktiv — der KDC stellt RC4-Tickets aus. Ein Server 2025 System wuerde diese ablehnen."
             Bedingung="Sofort betroffen bei: Server 2025 DC, Exchange SE Go-Live, oder April-2026-Update."
@@ -1103,7 +1103,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($rc4RiskCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=1; Typ='OK'; Bereich='RC4 in Accounts'
+            Nr=1; Typ='Information'; Bereich='RC4 in Accounts'
             Befund="Keine Accounts mit RC4/DES gefunden. 0 RC4-Tickets."
             Bewertung="Kein RC4-Risiko. Umgebung ist bereit fuer Server 2025 und das April-2026-Update."
             Bedingung="Keine."
@@ -1116,7 +1116,7 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($GPO.HasDES -and $rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=2; Typ='SCHLAFEND'; Bereich='GPO erlaubt DES'
+            Nr=2; Typ='Warnung'; Bereich='GPO erlaubt DES'
             Befund="GPO erlaubt DES (Wert $($GPO.Value)), aber es fliessen 0 DES/RC4-Tickets."
             Bewertung="Schlafend — kein aktives Problem. Die GPO haelt aber die Tuer fuer DES offen."
             Bedingung="Wird aktiv wenn ein sehr alter Client oder eine Appliance mit DES-only ins Netz kommt, oder wenn ein Angreifer per Kerberoasting gezielt DES erzwingt."
@@ -1128,7 +1128,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($GPO.HasRC4 -and -not $GPO.HasDES -and $rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=2; Typ='UEBERGANG'; Bereich='GPO erlaubt RC4'
+            Nr=2; Typ='Warnung'; Bereich='GPO erlaubt RC4'
             Befund="GPO erlaubt RC4+AES (kein DES), 0 RC4-Tickets."
             Bewertung="Akzeptabler Uebergangszustand. RC4 in der GPO ist das Sicherheitsnetz waehrend Accounts auf 24 umgestellt werden."
             Bedingung="GPO auf 2147483640 (AES-only) erst setzen wenn alle Accounts auf Wert 24 und Kennwoerter rotiert."
@@ -1138,7 +1138,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($null -eq $GPO.Value -or $GPO.Value -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=2; Typ='SCHLAFEND'; Bereich='GPO nicht gesetzt'
+            Nr=2; Typ='Warnung'; Bereich='GPO nicht gesetzt'
             Befund="GPO nicht konfiguriert — folgt OS-Default."
             Bewertung="Schlafend — aktuell kein Problem. Ab April 2026 (CVE-2026-20833) wird der Default auf AES-only geaendert."
             Bedingung="Wird automatisch aktiv am Patchday April 2026. Alle Accounts mit Wert 0 (NOT SET) werden dann als AES-only behandelt."
@@ -1154,7 +1154,7 @@ function Write-Kreuzpruefung {
     if ($delegRC4Count -gt 0 -and $rc4TicketCount -eq 0) {
         $delegNames = ($DelegRC4 | Select-Object -First 3 -ExpandProperty Name) -join ', '
         $findings += [PSCustomObject]@{
-            Nr=3; Typ='SCHLAFEND'; Bereich='Delegation mit RC4'
+            Nr=3; Typ='Warnung'; Bereich='Delegation mit RC4'
             Befund="$delegRC4Count Delegation-Accounts mit RC4 ($delegNames), aber 0 RC4-Tickets."
             Bewertung="Schlafend — Constrained Delegation verwendet unter normaler Last AES. Unter hoher Last oder bei bestimmten S4U2Proxy-Konstellationen kann der KDC RC4 fuer das delegierte Ticket waehlen."
             Bedingung="Wird aktiv bei: hoher Delegations-Last (z.B. Exchange SE Go-Live mit hunderten OWA-Sessions/Minute ueber Kemp), oder wenn der Backend-Account ebenfalls RC4 im Attribut hat."
@@ -1165,7 +1165,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($delegRC4Count -gt 0 -and $rc4TicketCount -gt 0) {
         $findings += [PSCustomObject]@{
-            Nr=3; Typ='AKTIV'; Bereich='Delegation mit RC4'
+            Nr=3; Typ='Fehler'; Bereich='Delegation mit RC4'
             Befund="$delegRC4Count Delegation-Accounts mit RC4 UND $rc4TicketCount RC4-Tickets."
             Bewertung="Aktiv — Delegation-Accounts muessen sofort auf AES-only gesetzt werden. Keytabs mit AES neu erstellen."
             Bedingung="Betrifft alle Dienste hinter dem LoadBalancer/Proxy."
@@ -1179,7 +1179,7 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($preAuthCount -gt 50 -and $rc4TicketCount -eq 0 -and $correlCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=4; Typ='GETRENNT'; Bereich='PreAuth Fehler'
+            Nr=4; Typ='Information'; Bereich='PreAuth Fehler'
             Befund="$preAuthCount Pre-Auth Fehler, aber 0 RC4-Tickets und 0 korrelierte Lockouts."
             Bewertung="Getrennt vom RC4-Thema — die Fehler sind Credential-Hygiene (falsche Passwoerter, abgelaufene Accounts). Kein Kerberos-Encryption-Problem."
             Bedingung="Wird RC4-relevant wenn: nach April-2026-Update die Fallback-Kette (Kerberos->NTLM) haeufiger getriggert wird und die falschen Credentials dann zu Lockouts fuehren."
@@ -1190,7 +1190,7 @@ function Write-Kreuzpruefung {
     }
     elseif ($preAuthCount -gt 50 -and $correlCount -gt 0) {
         $findings += [PSCustomObject]@{
-            Nr=4; Typ='AKTIV'; Bereich='Fallback-Kette'
+            Nr=4; Typ='Fehler'; Bereich='Fallback-Kette'
             Befund="$preAuthCount Pre-Auth Fehler mit $correlCount korrelierten Lockouts."
             Bewertung="Aktiv — Kerberos-Fehler loesen NTLM-Fallback aus, der zu Kontosperrungen fuehrt. Die betroffenen Accounts haben gespeicherte alte Credentials."
             Bedingung="Verschlechtert sich mit Server 2025 DC (mehr Kerberos-Fehler durch RC4-Ablehnung) und nach April-2026-Update."
@@ -1206,7 +1206,7 @@ function Write-Kreuzpruefung {
     # Hinweis: SMB-Daten kommen aus Check-Server2025Defaults, nicht aus diesem Skript.
     # Wir koennen aber den Hinweis geben.
     $findings += [PSCustomObject]@{
-        Nr=5; Typ='HINWEIS'; Bereich='SMB Signing'
+        Nr=5; Typ='Information'; Bereich='SMB Signing'
         Befund="SMB Signing wird von diesem Skript nicht geprueft."
         Bewertung="SMB Signing Mismatch ist ein separates Risiko bei Server 2025 Einfuehrung. Pruefen mit Check-Server2025Defaults-v4.ps1."
         Bedingung="Wenn alle Server konsistent True/True haben: kein Risiko. Wenn gemischt: Drucker und Appliances pruefen."
@@ -1219,7 +1219,7 @@ function Write-Kreuzpruefung {
     # ============================================================
     if ($rc4TicketCount -eq 0) {
         $findings += [PSCustomObject]@{
-            Nr=6; Typ='HINWEIS'; Bereich='SAP Kerberos'
+            Nr=6; Typ='Information'; Bereich='SAP Kerberos'
             Befund="0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."
             Bewertung="Hinweis — wenn SAP heute mit AES funktioniert, funktioniert es auch nach DC-Account-Umstellung auf Wert 24, Server 2025 DC, und April-2026-Update."
             Bedingung="Keine weitere Aktion noetig solange der SAP Kernel nicht downgraded wird."
@@ -1239,7 +1239,7 @@ function Write-Kreuzpruefung {
     if ($machineAccts.Count -gt 0) {
         $machineList = ($machineAccts | Select-Object -First 3) -join ', '
         $findings += [PSCustomObject]@{
-            Nr=7; Typ='SCHLAFEND'; Bereich='Maschinenkennwort'
+            Nr=7; Typ='Warnung'; Bereich='Maschinenkennwort'
             Befund="$($machineAccts.Count) Maschinen-Accounts mit Pre-Auth Fehlern ($machineList)."
             Bewertung="Schlafend — Kennwort-Rotation funktioniert nicht sauber. Bei einem Server 2025 DC generiert die Rotation nur AES-Keys, aeltere DCs erwarten RC4-Keys."
             Bedingung="Wird aktiv ca. 30 Tage nach Server 2025 DC Promotion. Server fallen einzeln aus, ueber Tage verteilt."
@@ -1256,7 +1256,7 @@ function Write-Kreuzpruefung {
     $notSetCount = ($AllSystems | Where-Object { $_.EncCategory -eq 'NOT_SET' } | Measure-Object).Count
     if ($notSetCount -gt 0) {
         $findings += [PSCustomObject]@{
-            Nr=8; Typ='SCHLAFEND'; Bereich='NOT SET Accounts'
+            Nr=8; Typ='Warnung'; Bereich='NOT SET Accounts'
             Befund="$notSetCount Accounts mit Wert 0 (NOT SET) — folgen dem Domain-Default."
             Bewertung="Schlafend — aktuell erlaubt der Default RC4+AES. Ab April 2026 wird der Default auf AES-only geaendert."
             Bedingung="Wird automatisch aktiv am Patchday April 2026. Wenn diese Accounts RC4-Clients bedienen, schlagen deren Authentifizierungen fehl."
@@ -1269,8 +1269,8 @@ function Write-Kreuzpruefung {
     # ============================================================
     # Zusammenfassung
     # ============================================================
-    $aktiv     = @($findings | Where-Object { $_.Typ -eq 'AKTIV' })
-    $schlafend = @($findings | Where-Object { $_.Typ -eq 'SCHLAFEND' })
+    $aktiv     = @($findings | Where-Object { $_.Typ -eq 'Fehler' })
+    $schlafend = @($findings | Where-Object { $_.Typ -eq 'Warnung' })
     $passiv    = @($findings | Where-Object { $_.Typ -match 'PASSIV|MITIGIERT|GETRENNT|UEBERGANG' })
 
     Write-Host "  --- ZUSAMMENFASSUNG KREUZPRUEFUNG ---" -ForegroundColor Magenta
@@ -1422,7 +1422,7 @@ if ($ReassessFrom) {
     # =============================================
     Write-Host ""
     Write-Host "=================================================================" -ForegroundColor Magenta
-    Write-Host "  RC4 Environment Discovery v1.6 — REASSESSMENT" -ForegroundColor Magenta
+    Write-Host "  RC4 Environment Discovery v1.7 — REASSESSMENT" -ForegroundColor Magenta
     Write-Host "  Quelle: $ReassessFrom" -ForegroundColor Magenta
     Write-Host "=================================================================" -ForegroundColor Magenta
 
@@ -1480,12 +1480,9 @@ if ($ReassessFrom) {
         if ($hasExcel) {
             $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
                 Export-Excel -Path $xlPath -WorksheetName 'Kreuzpruefung' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
-                    New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
-                    New-ConditionalText 'SCHLAFEND'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-                    New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                    New-ConditionalText 'HINWEIS'  -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                    New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
-                    New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                    New-ConditionalText 'Fehler'      -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                    New-ConditionalText 'Warnung'     -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+                    New-ConditionalText 'Information' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
                 )
             Write-Host "  Excel-Tab    : Kreuzpruefung" -ForegroundColor Green
         }
@@ -1513,7 +1510,7 @@ if ($ReassessFrom) {
 
 Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
-Write-Host "  RC4 Environment Discovery v1.6" -ForegroundColor Cyan
+Write-Host "  RC4 Environment Discovery v1.7" -ForegroundColor Cyan
 Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
 Write-Host "  Zeitraum: letzte $Hours Stunden auf $(hostname)" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
@@ -1561,7 +1558,7 @@ $crossCheck = Write-Kreuzpruefung -Discovery $discovery -Events $events -GPO $gp
 # Additional findings from KDCSVC and NTLMv1 (append to crossCheck)
 if ($kdcsvc -and (SafeCount $kdcsvc.Events) -gt 0) {
     $crossCheck += [PSCustomObject]@{
-        Nr=9; Typ='AKTIV'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
+        Nr=9; Typ='Fehler'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
         Befund="$((SafeCount $kdcsvc.Events)) KDCSVC Events im System Log. Diese zeigen Accounts/Dienste die im April 2026 fehlschlagen."
         Bewertung="Aktiv — der neue Microsoft Audit hat RC4-Abhaengigkeiten erkannt. Event 201/202/206/207 = Warnung. Event 203/204/209 = bereits blockiert."
         Bedingung="Diese Accounts schlagen ab dem April-2026-Patchday fehl wenn nicht vorher auf AES umgestellt."
@@ -1569,7 +1566,7 @@ if ($kdcsvc -and (SafeCount $kdcsvc.Events) -gt 0) {
 }
 elseif ($kdcsvc -and (SafeCount $kdcsvc.Events) -eq 0 -and $kdcsvc.CUInstalled) {
     $crossCheck += [PSCustomObject]@{
-        Nr=9; Typ='OK'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
+        Nr=9; Typ='Information'; Bereich='KDCSVC Audit Events (Januar 2026 CU)'
         Befund="0 KDCSVC Events. Der Microsoft Audit erkennt keine RC4-Abhaengigkeiten."
         Bewertung="Kein RC4-Risiko durch den neuen Audit erkannt. Die Umgebung ist fuer das April-Update vorbereitet."
         Bedingung="Keine."
@@ -1577,7 +1574,7 @@ elseif ($kdcsvc -and (SafeCount $kdcsvc.Events) -eq 0 -and $kdcsvc.CUInstalled) 
 }
 elseif ($kdcsvc -and -not $kdcsvc.CUInstalled) {
     $crossCheck += [PSCustomObject]@{
-        Nr=9; Typ='SCHLAFEND'; Bereich='KDCSVC Audit Events'
+        Nr=9; Typ='Warnung'; Bereich='KDCSVC Audit Events'
         Befund="Januar 2026 CU nicht installiert oder KDCSVC Provider nicht verfuegbar."
         Bewertung="Schlafend — ohne das Januar CU fehlen die neuen Audit Events 201-209. Erst nach Installation zeigt der KDC welche Accounts im April fehlschlagen."
         Bedingung="Januar 2026 CU auf allen DCs installieren."
@@ -1587,7 +1584,7 @@ elseif ($kdcsvc -and -not $kdcsvc.CUInstalled) {
 if ($ntlmInfo -and $ntlmInfo.V1Count -gt 0) {
     $v1Top = ($ntlmInfo.V1Accounts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 5 | ForEach-Object { ($_.Key -split '\|')[0] }) -join ', '
     $crossCheck += [PSCustomObject]@{
-        Nr=10; Typ='AKTIV'; Bereich='NTLMv1 Anmeldungen'
+        Nr=10; Typ='Fehler'; Bereich='NTLMv1 Anmeldungen'
         Befund="$($ntlmInfo.V1Count) NTLMv1-Anmeldungen erkannt. NTLMv1 ist kryptographisch gebrochen (Mandiant Rainbow Tables)."
         Bewertung="Aktiv — NTLMv1 ermoeglicht sofortige Credential-Kompromittierung. NTLMv2 ist deprecated aber noch nicht gebrochen. NTLMv1 muss sofort per GPO blockiert werden."
         Bedingung="Top Accounts: $v1Top. GPO: Network security: LAN Manager authentication level = Send NTLMv2 response only. Refuse LM and NTLM."
@@ -1595,7 +1592,7 @@ if ($ntlmInfo -and $ntlmInfo.V1Count -gt 0) {
 }
 elseif ($ntlmInfo -and $ntlmInfo.V2Count -gt 0) {
     $crossCheck += [PSCustomObject]@{
-        Nr=10; Typ='HINWEIS'; Bereich='NTLM Anmeldungen'
+        Nr=10; Typ='Information'; Bereich='NTLM Anmeldungen'
         Befund="$($ntlmInfo.V2Count) NTLMv2-Anmeldungen, 0 NTLMv1. NTLMv2 ist deprecated (Microsoft, Januar 2026)."
         Bewertung="NTLMv2 ist kryptographisch nicht gebrochen aber deprecated. In der naechsten Windows-Version wird NTLM standardmaessig deaktiviert. Kerberos ist der Zielzustand."
         Bedingung="Mittelfristig: NTLM-Abhaengigkeiten identifizieren und auf Kerberos umstellen."
@@ -1614,12 +1611,9 @@ if ((SafeCount $crossCheck) -gt 0) {
     if ($hasExcel) {
         $crossCheck | Select-Object Nr, Typ, Bereich, Befund, Bewertung, Bedingung |
             Export-Excel -Path $xlPath -WorksheetName 'Kreuzpruefung' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $(
-                New-ConditionalText 'AKTIV'    -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
-                New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
-                New-ConditionalText 'PASSIV'   -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                New-ConditionalText 'HINWEIS' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
-                New-ConditionalText 'GETRENNT' -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C'
-                New-ConditionalText 'UEBERGANG' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
+                New-ConditionalText 'Fehler'      -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F'
+                New-ConditionalText 'Warnung'     -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806'
+                New-ConditionalText 'Information' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041'
             )
         Write-Host "  Excel-Tab    : Kreuzpruefung" -ForegroundColor Green
     }
@@ -1638,7 +1632,7 @@ if ($kdcsvc -and (SafeCount $kdcsvc.Events) -gt 0) {
 if ($ntlmInfo -and $ntlmInfo.V1Count -gt 0) {
     $ntlmInfo.V1Accounts.GetEnumerator() | ForEach-Object {
         $parts = $_.Key -split '\|'
-        [PSCustomObject]@{ Account=$parts[0]; Workstation=$parts[1]; Count=$_.Value; Version='NTLMv1'; Risiko='KRITISCH — kryptographisch gebrochen' }
+        [PSCustomObject]@{ Account=$parts[0]; Workstation=$parts[1]; Count=$_.Value; Version='NTLMv1'; Risiko='Fehler — kryptographisch gebrochen' }
     } | Sort-Object Count -Descending |
         Export-Csv (Join-Path $reportDir 'NTLMv1_Usage.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
     Write-Host "  CSV          : NTLMv1_Usage.csv ($($ntlmInfo.V1Count) Anmeldungen)" -ForegroundColor Red
@@ -1667,12 +1661,12 @@ Write-Host "  --- BEWERTUNG ---" -ForegroundColor Yellow
 
 # GPO
 if ($gpo.Value -eq 2147483647) {
-    Write-Host "  [GPO] KRITISCH: Die Kerberos-GPO erlaubt alle Verschluesselungstypen" -ForegroundColor Red
+    Write-Host "  [GPO] Fehler: Die Kerberos-GPO erlaubt alle Verschluesselungstypen" -ForegroundColor Red
     Write-Host "         einschliesslich DES. DES ist seit 2008 gebrochen." -ForegroundColor Red
     Write-Host "         Empfehlung: GPO sofort auf 2147483644 (DES entfernen) aendern." -ForegroundColor Red
 }
 elseif ($gpo.HasDES) {
-    Write-Host "  [GPO] KRITISCH: DES noch erlaubt. Sofort entfernen." -ForegroundColor Red
+    Write-Host "  [GPO] Fehler: DES noch erlaubt. Sofort entfernen." -ForegroundColor Red
 }
 elseif ($gpo.HasRC4) {
     Write-Host "  [GPO] Uebergang: RC4 noch erlaubt (Wert $($gpo.Value))." -ForegroundColor Yellow

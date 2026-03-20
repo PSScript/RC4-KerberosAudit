@@ -26,7 +26,7 @@
     .\New-RC4Report.ps1 -ReportPath 'C:\Temp\RC4_DGBRS_20260319_162058' -DomainLabel 'DGBRS'
 
 .NOTES
-    Version : 1.0
+    Version : 1.2
     Requires: ImportExcel (optional — HTML wird immer erzeugt)
 #>
 
@@ -182,7 +182,7 @@ $f1Impact = @($rc4Risk | Select-Object -First 10 | ForEach-Object {
 if ($rc4RiskCount -gt 10) { $f1Impact += "`n... und $($rc4RiskCount - 10) weitere" }
 
 $findings += [PSCustomObject]@{
-    Nr=1; Typ=if($rc4TicketCount -gt 0){'AKTIV'}else{'PASSIV'}
+    Nr=1; Typ=if($rc4TicketCount -gt 0){'Fehler'}else{'Information'}
     Titel='RC4 in Computer/Service Accounts'
     Befund="$rc4RiskCount Accounts haben RC4 oder DES im Attribut msDS-SupportedEncryptionTypes. $rc4TicketCount RC4-verschluesselte Service Tickets in den letzten 24 Stunden."
     Betroffene=$f1Impact
@@ -192,7 +192,7 @@ $findings += [PSCustomObject]@{
 }
 
 # --- Finding 2: GPO ---
-$gpoStatus = if (-not $gpo -or -not $gpo.Value) {'SCHLAFEND'} elseif ($gpo.HasDES) {'SCHLAFEND'} elseif ($gpo.HasRC4) {'UEBERGANG'} else {'OK'}
+$gpoStatus = if (-not $gpo -or -not $gpo.Value) {'Warnung'} elseif ($gpo.HasDES) {'Warnung'} elseif ($gpo.HasRC4) {'Warnung'} else {'Information'}
 $gpoVal = if ($gpo) { $gpo.Value } else { 'NOT SET' }
 
 $findings += [PSCustomObject]@{
@@ -211,7 +211,7 @@ if ((SafeCount $trustsUrgent) -gt 0) {
     $trustNames = ($trustsUrgent | ForEach-Object { $_.ComputerName }) -join ', '
     $trustFix = ($trustsUrgent | ForEach-Object { $_.Fix }) -join "`n"
     $findings += [PSCustomObject]@{
-        Nr=3; Typ='SCHLAFEND'
+        Nr=3; Typ='Warnung'
         Titel='Trust-Objekte ohne AES'
         Befund="$(SafeCount $trustsUrgent) Trust(s) ohne AES im Attribut: $trustNames. Cross-Domain-Authentifizierung verwendet RC4."
         Betroffene=$trustNames
@@ -227,7 +227,7 @@ if ((SafeCount $dcsDES) -gt 0) {
     $dcNames = ($dcsDES | ForEach-Object { $_.ComputerName }) -join ', '
     $dcFix = ($dcsDES | Select-Object -First 1).Fix
     $findings += [PSCustomObject]@{
-        Nr=4; Typ='SCHLAFEND'
+        Nr=4; Typ='Warnung'
         Titel='Domain Controller mit DES im Attribut'
         Befund="$(SafeCount $dcsDES) DCs haben Wert 31 (DES+RC4+AES): $dcNames"
         Betroffene=$dcNames
@@ -245,7 +245,7 @@ $delegRC4 = @($deleg | Where-Object {
 if ((SafeCount $delegRC4) -gt 0) {
     $delegNames = ($delegRC4 | ForEach-Object { "$($_.Name) ($($_.DelegationType) -> $($_.DelegateTo.Substring(0, [Math]::Min(50, $_.DelegateTo.Length))))" }) -join "`n"
     $findings += [PSCustomObject]@{
-        Nr=5; Typ=if($rc4TicketCount -gt 0){'AKTIV'}else{'SCHLAFEND'}
+        Nr=5; Typ=if($rc4TicketCount -gt 0){'Fehler'}else{'Warnung'}
         Titel='Delegation-Accounts mit RC4/DES'
         Befund="$(SafeCount $delegRC4) Constrained Delegation Accounts mit RC4 oder DES im Attribut."
         Betroffene=$delegNames
@@ -257,7 +257,7 @@ if ((SafeCount $delegRC4) -gt 0) {
 
 # --- Finding 6: SAP ---
 $findings += [PSCustomObject]@{
-    Nr=6; Typ=if($rc4TicketCount -eq 0){'HINWEIS'}else{'PRUEFEN'}
+    Nr=6; Typ=if($rc4TicketCount -eq 0){'Information'}else{'Warnung'}
     Titel='SAP Kerberos-Kompatibilitaet'
     Befund=if($rc4TicketCount -eq 0){"0 RC4-Tickets — SAP erhaelt und akzeptiert AES-Tickets."}else{"$rc4TicketCount RC4-Tickets — pruefen ob SAP-SPNs betroffen sind."}
     Betroffene='SAP Application Server'
@@ -274,7 +274,7 @@ if ($preAuthCount -gt 50) {
         $topAccounts = @($preAuthDetail | Where-Object { $_.Status -eq '0x18' } | Group-Object Account | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Name) ($($_.Count)x)" }) -join ', '
     }
     $findings += [PSCustomObject]@{
-        Nr=7; Typ='GETRENNT'
+        Nr=7; Typ='Information'
         Titel='Pre-Authentication Fehler (Credential-Hygiene)'
         Befund="$preAuthCount Pre-Auth Fehler (Event 4771) in 24 Stunden. 0 RC4-Tickets, $(SafeCount $correl) korrelierte Lockouts."
         Betroffene=if($topAccounts){"Top Accounts: $topAccounts"}else{"Details in PreAuthFails.csv"}
@@ -288,7 +288,7 @@ if ($preAuthCount -gt 50) {
 $notSet = @($allDiscovery | Where-Object { $_.EncCategory -eq 'NOT_SET' })
 if ((SafeCount $notSet) -gt 0) {
     $findings += [PSCustomObject]@{
-        Nr=8; Typ='SCHLAFEND'
+        Nr=8; Typ='Warnung'
         Titel='Accounts ohne expliziten Verschluesselungstyp (Wert 0)'
         Befund="$(SafeCount $notSet) Accounts mit msDS-SupportedEncryptionTypes = 0 (NOT SET)."
         Betroffene=(@($notSet | Select-Object -First 10 | ForEach-Object { "$($_.Name) ($($_.Role))" }) -join ', ') + $(if ((SafeCount $notSet) -gt 10) { " ... +$((SafeCount $notSet) - 10) weitere" })
@@ -310,7 +310,7 @@ if ((SafeCount $smbCsv) -gt 0) {
         $allTrue = @($smbCsv | Where-Object { $_.$srvCol -eq 'True' -and $_.$cliCol -eq 'True' })
 
         $findings += [PSCustomObject]@{
-            Nr=9; Typ=if((SafeCount $smbMismatch) -gt 0){'WARNUNG'}elseif((SafeCount $allTrue) -eq (SafeCount $smbCsv)){'OK'}else{'HINWEIS'}
+            Nr=9; Typ=if((SafeCount $smbMismatch) -gt 0){'Warnung'}elseif((SafeCount $allTrue) -eq (SafeCount $smbCsv)){'Information'}else{'Information'}
             Titel='SMB Signing Konsistenz'
             Befund="$(SafeCount $smbCsv) Server geprueft. $(SafeCount $allTrue) mit Server+Client Required=True. $(SafeCount $smbMismatch) mit Mismatch."
             Betroffene=if((SafeCount $smbMismatch) -gt 0){($smbMismatch | Select-Object -First 5 | ForEach-Object { $n = if ($_.Name) {$_.Name} elseif ($_.ComputerName) {$_.ComputerName} else {'?'}; "$n (S=$($_.$srvCol) C=$($_.$cliCol))" }) -join ', '}else{"Alle konsistent True/True — Zielzustand fuer Server 2025."}
@@ -324,7 +324,7 @@ if ((SafeCount $smbCsv) -gt 0) {
 # --- Finding 10: KDCSVC Audit Events ---
 if ((SafeCount $kdcsvcEvents) -gt 0) {
     $findings += [PSCustomObject]@{
-        Nr=10; Typ='AKTIV'
+        Nr=10; Typ='Fehler'
         Titel='KDCSVC Audit Events (Januar 2026 CU)'
         Befund="$(SafeCount $kdcsvcEvents) KDCSVC Events im System Log. Diese zeigen praezise welche Accounts und Dienste im April 2026 fehlschlagen."
         Betroffene=(@($kdcsvcEvents | Group-Object EventID | Sort-Object Name | ForEach-Object { "Event $($_.Name): $($_.Count)x" }) -join ', ')
@@ -338,7 +338,7 @@ if ((SafeCount $kdcsvcEvents) -gt 0) {
 if ((SafeCount $ntlmV1) -gt 0) {
     $v1Top = ($ntlmV1 | Sort-Object { [int]$_.Count } -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Account) ($($_.Count)x von $($_.Workstation))" }) -join '; '
     $findings += [PSCustomObject]@{
-        Nr=11; Typ='AKTIV'
+        Nr=11; Typ='Fehler'
         Titel='NTLMv1 Anmeldungen — kryptographisch gebrochen'
         Befund="$(($ntlmV1 | Measure-Object -Property Count -Sum).Sum) NTLMv1-Anmeldungen erkannt. NTLMv1 ist durch Mandiant Rainbow Tables sofort kompromittierbar."
         Betroffene=$v1Top
@@ -348,11 +348,11 @@ if ((SafeCount $ntlmV1) -gt 0) {
     }
 }
 
-# --- Priority sort: AKTIV first, then SCHLAFEND, then rest ---
-$typPrio = @{ 'AKTIV'=1; 'SCHLAFEND'=2; 'WARNUNG'=2; 'UEBERGANG'=3; 'GETRENNT'=4; 'PASSIV'=5; 'HINWEIS'=5; 'HINWEIS'=5; 'HINWEIS'=6; 'OK'=7; 'PRUEFEN'=2 }
+# --- Priority sort: Fehler first, then Warnung, then Information ---
+$typPrio = @{ 'Fehler'=1; 'Warnung'=2; 'Information'=3 }
 $findings = @($findings | Sort-Object { if ($typPrio[$_.Typ]) { $typPrio[$_.Typ] } else { 99 } }, Nr)
 
-Write-Host "`n  $((SafeCount $findings)) Findings generiert (Prioritaet: AKTIV zuerst)" -ForegroundColor Cyan
+Write-Host "`n  $((SafeCount $findings)) Findings generiert (Fehler zuerst)" -ForegroundColor Cyan
 
 #endregion
 
@@ -370,13 +370,9 @@ th { background: #C8102E; color: white; padding: 8px 10px; text-align: left; fon
 td { padding: 6px 10px; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
 tr:nth-child(even) { background: #f5f0f0; }
 .pill { display: inline-block; padding: 2px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
-.aktiv { background: #FCEBEB; color: #791F1F; }
-.schlafend { background: #FFF8E1; color: #633806; }
-.passiv, .hinweis, .uebergang { background: #E1F5EE; color: #085041; }
-.getrennt { background: #E6F1FB; color: #0C447C; }
-.ok { background: #E1F5EE; color: #085041; }
+.fehler { background: #FCEBEB; color: #791F1F; }
 .warnung { background: #FFF8E1; color: #633806; }
-.hinweis { background: #F5F5F5; color: #666; }
+.information { background: #E1F5EE; color: #085041; }
 .finding { background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px 20px; margin: 16px 0; }
 .finding h3 { margin-top: 0; }
 .meta { font-size: 13px; color: #666; }
@@ -392,14 +388,12 @@ tr:nth-child(even) { background: #f5f0f0; }
 '@
 
 $typClass = @{
-    'AKTIV'='aktiv'; 'SCHLAFEND'='schlafend'; 'PASSIV'='passiv'
-    'HINWEIS'='mitigiert'; 'GETRENNT'='getrennt'; 'OK'='ok'
-    'UEBERGANG'='uebergang'; 'WARNUNG'='warnung'; 'HINWEIS'='hinweis'; 'PRUEFEN'='warnung'
+    'Fehler'='fehler'; 'Warnung'='warnung'; 'Information'='information'
 }
 
-$aktivCount = @($findings | Where-Object { $_.Typ -eq 'AKTIV' }).Count
-$schlafCount = @($findings | Where-Object { $_.Typ -eq 'SCHLAFEND' }).Count
-$passivCount = @($findings | Where-Object { $_.Typ -match 'PASSIV|MITIGIERT|GETRENNT|UEBERGANG|OK' }).Count
+$aktivCount = @($findings | Where-Object { $_.Typ -eq 'Fehler' }).Count
+$schlafCount = @($findings | Where-Object { $_.Typ -eq 'Warnung' }).Count
+$infoCount = @($findings | Where-Object { $_.Typ -eq 'Information' }).Count
 
 $htmlBody = @"
 <!DOCTYPE html>
@@ -409,28 +403,28 @@ $htmlBody = @"
 <p class="meta">Erstellt: $(Get-Date -Format 'yyyy-MM-dd HH:mm') | Quelle: $ReportPath</p>
 
 <div class="summary-grid">
-<div class="summary-card"><div class="label">Aktive Risiken</div><div class="value" style="color:$(if($aktivCount -gt 0){'#791F1F'}else{'#085041'})">$aktivCount</div></div>
-<div class="summary-card"><div class="label">Schlafend</div><div class="value" style="color:$(if($schlafCount -gt 0){'#633806'}else{'#085041'})">$schlafCount</div></div>
-<div class="summary-card"><div class="label">Passiv / Mitigiert</div><div class="value" style="color:#085041">$passivCount</div></div>
+<div class="summary-card"><div class="label">Fehler</div><div class="value" style="color:$(if($aktivCount -gt 0){'#791F1F'}else{'#085041'})">$aktivCount</div></div>
+<div class="summary-card"><div class="label">Warnungen</div><div class="value" style="color:$(if($schlafCount -gt 0){'#633806'}else{'#085041'})">$schlafCount</div></div>
+<div class="summary-card"><div class="label">Information</div><div class="value" style="color:#085041">$infoCount</div></div>
 <div class="summary-card"><div class="label">Systeme mit RC4/DES</div><div class="value">$rc4RiskCount</div></div>
 <div class="summary-card"><div class="label">RC4 Tickets (24h)</div><div class="value" style="color:$(if($rc4TicketCount -gt 0){'#791F1F'}else{'#085041'})">$rc4TicketCount</div></div>
 <div class="summary-card"><div class="label">GPO</div><div class="value" style="font-size:14px">$gpoVal</div></div>
 </div>
 
-<h2>Findings (Priorit&auml;t: kritisch zuerst)</h2>
+<h2>Findings (Fehler zuerst)</h2>
 "@
 
 # Priority header
-$aktivFindings = @($findings | Where-Object { $_.Typ -eq 'AKTIV' })
-if ($aktivFindings.Count -gt 0) {
+$fehlerFindings = @($findings | Where-Object { $_.Typ -eq 'Fehler' })
+if ($fehlerFindings.Count -gt 0) {
     $htmlBody += '<div style="background:#FCEBEB;border-left:4px solid #C8102E;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0;"><strong style="color:#791F1F;">Sofort handeln:</strong> '
-    $htmlBody += ($aktivFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
+    $htmlBody += ($fehlerFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
     $htmlBody += '</div>'
 }
-$schlafFindings = @($findings | Where-Object { $_.Typ -eq 'SCHLAFEND' -or $_.Typ -eq 'WARNUNG' })
-if ($schlafFindings.Count -gt 0) {
+$warnFindings = @($findings | Where-Object { $_.Typ -eq 'Warnung' })
+if ($warnFindings.Count -gt 0) {
     $htmlBody += '<div style="background:#FFF8E1;border-left:4px solid #EF9F27;padding:12px 16px;margin:12px 0;border-radius:0 6px 6px 0;"><strong style="color:#633806;">Vor April 2026:</strong> '
-    $htmlBody += ($schlafFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
+    $htmlBody += ($warnFindings | ForEach-Object { "#$($_.Nr) $($_.Titel)" }) -join ' | '
     $htmlBody += '</div>'
 }
 
@@ -478,29 +472,27 @@ if ($hasExcel) {
     # --- Tab 1: Uebersicht ---
     $overview = @()
     $overview += [PSCustomObject]@{ Bereich='Domaene'; Wert=$DomainLabel; Status='Info' }
-    $overview += [PSCustomObject]@{ Bereich='Aktive Risiken'; Wert=$aktivCount; Status=if($aktivCount -gt 0){'KRITISCH'}else{'OK'} }
-    $overview += [PSCustomObject]@{ Bereich='Schlafende Risiken'; Wert=$schlafCount; Status=if($schlafCount -gt 0){'WARNUNG'}else{'OK'} }
-    $overview += [PSCustomObject]@{ Bereich='Passiv/Mitigiert'; Wert=$passivCount; Status='OK' }
-    $overview += [PSCustomObject]@{ Bereich='Systeme mit RC4/DES'; Wert=$rc4RiskCount; Status=if($rc4RiskCount -gt 0){'WARNUNG'}else{'OK'} }
-    $overview += [PSCustomObject]@{ Bereich='RC4 Tickets (24h)'; Wert=$rc4TicketCount; Status=if($rc4TicketCount -gt 0){'KRITISCH'}else{'OK'} }
+    $overview += [PSCustomObject]@{ Bereich='Aktive Risiken'; Wert=$aktivCount; Status=if($aktivCount -gt 0){'Fehler'}else{'Information'} }
+    $overview += [PSCustomObject]@{ Bereich='Schlafende Risiken'; Wert=$schlafCount; Status=if($schlafCount -gt 0){'Warnung'}else{'Information'} }
+    $overview += [PSCustomObject]@{ Bereich='Passiv/Mitigiert'; Wert=$passivCount; Status='Information' }
+    $overview += [PSCustomObject]@{ Bereich='Systeme mit RC4/DES'; Wert=$rc4RiskCount; Status=if($rc4RiskCount -gt 0){'Warnung'}else{'Information'} }
+    $overview += [PSCustomObject]@{ Bereich='RC4 Tickets (24h)'; Wert=$rc4TicketCount; Status=if($rc4TicketCount -gt 0){'Fehler'}else{'Information'} }
     $overview += [PSCustomObject]@{ Bereich='GPO Wert'; Wert=$gpoVal; Status=$gpoStatus }
-    $overview += [PSCustomObject]@{ Bereich='Urgent Fixes'; Wert=(SafeCount $urgentFix); Status=if((SafeCount $urgentFix) -gt 0){'WARNUNG'}else{'OK'} }
+    $overview += [PSCustomObject]@{ Bereich='Urgent Fixes'; Wert=(SafeCount $urgentFix); Status=if((SafeCount $urgentFix) -gt 0){'Warnung'}else{'Information'} }
 
     $ctStatus = @(
-        (New-ConditionalText 'KRITISCH' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
-        (New-ConditionalText 'WARNUNG'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
-        (New-ConditionalText 'OK'       -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
+        (New-ConditionalText 'Fehler' -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
+        (New-ConditionalText 'Warnung'  -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
+        (New-ConditionalText 'Information'       -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
     )
 
     $overview | Export-Excel -Path $xlFile -WorksheetName 'Uebersicht' -AutoSize -FreezeTopRow -BoldTopRow -ConditionalText $ctStatus
 
     # --- Tab 2: Findings ---
     $ctFindings = @(
-        (New-ConditionalText 'AKTIV'     -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
-        (New-ConditionalText 'SCHLAFEND' -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
-        (New-ConditionalText 'PASSIV'    -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
-        (New-ConditionalText 'HINWEIS' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
-        (New-ConditionalText 'GETRENNT'  -BackgroundColor '#E6F1FB' -ConditionalTextColor '#0C447C')
+        (New-ConditionalText 'Fehler'      -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
+        (New-ConditionalText 'Warnung'     -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
+        (New-ConditionalText 'Information' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
     )
 
     $findings | Select-Object Nr, Typ, Titel, Befund, Betroffene, Auswirkung, Mitigation, Seiteneffekte |
