@@ -18,7 +18,7 @@
     unterschiedlicher Ursache und unterschiedlicher Mitigation.
 
 .PARAMETER TargetScope
-    DiscoveredOnly (Standard: SPN-basiert — HTTP/*, WSMAN/*, KCD), AllServers oder Full.
+    DiscoveredOnly (Standard: SPN-basiert — HTTP/*, DCs, KCD), AllServers oder Full.
 
 .PARAMETER Hours
     Zeitraum fuer Event-Log-Suche in Stunden (HTTPERR, IIS, Application).
@@ -181,23 +181,9 @@ function Get-TargetServers {
             Write-Status "Domain Controller" "$($dcs.Count)$(if ($dcNew -gt 0) {" ($dcNew zusaetzlich)"})"
         } catch { Write-Host "  DC-Abfrage fehlgeschlagen: $_" -ForegroundColor DarkGray }
 
-        # 3. WSMAN/* SPN (WinRM HTTPS — auch HTTP.sys)
-        try {
-            $wsmanSpn = @(Get-ADComputer -Filter 'servicePrincipalName -like "WSMAN/*"' `
-                -Properties DNSHostName, OperatingSystem -EA Stop |
-                Where-Object { $_.Enabled -ne $false -and $_.OperatingSystem -like '*Server*' })
-            $wsmanNew = 0
-            foreach ($srv in $wsmanSpn) {
-                $key = $srv.DNSHostName.ToLower()
-                if (-not $discovered.ContainsKey($key)) {
-                    $discovered[$key] = [PSCustomObject]@{
-                        DNSHostName = $srv.DNSHostName; Name = $srv.Name; Role = 'WSMAN'; SPNs = @()
-                    }
-                    $wsmanNew++
-                }
-            }
-            if ($wsmanNew -gt 0) { Write-Status "WSMAN/* SPN (zusaetzlich)" "$wsmanNew" }
-        } catch {}
+        # 3. WSMAN/* SPN bewusst NICHT abfragen — fast jeder Server hat WinRM
+        #    und damit WSMAN/* SPNs. Das wuerde DiscoveredOnly ad absurdum fuehren.
+        #    WinRM-HTTPS-Listener werden stattdessen im Remote-Check (Get-CBTStatus) geprueft.
 
         # 4. KCD Targets mit HTTP/ Delegation
         try {
