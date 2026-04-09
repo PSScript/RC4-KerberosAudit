@@ -471,81 +471,282 @@ function Get-LocalCBTStatus {
     return $result
 }
 
-function Get-HttpErrEvents {
+function Get-CBTEventCorrelation {
     <#
     .SYNOPSIS
-        Sucht HTTPERR-Log und Application-Log nach STATUS_BAD_BINDINGS / 401 Indikatoren.
+        6 FilterXML-Checks fuer CBT-Probleme. Gleiche Methodik wie Prove-RC4Usage.ps1.
+        Korreliert Kerberos-Ticket-Ausstellung (4769) mit Auth-Fehler (4625) —
+        wenn das Ticket gueltig ist aber die Authentifizierung trotzdem fehlschlaegt,
+        ist CBT die wahrscheinliche Ursache.
     #>
     [CmdletBinding()]
     param([int]$MsBack, [int]$Max = 500)
 
-    Write-Host "`n=== HTTP 401 / BAD_BINDINGS EVENTS ===" -ForegroundColor Yellow
+    Write-Host "`n=== CBT EVENT-KORRELATION (6 Checks) ===" -ForegroundColor Yellow
 
-    $events = @()
+    $allEvents = @()
+    $summary = @{}
 
-    # Application Log: HTTP.sys / IIS Fehler
+    # ── Check 1: Event 4625 SubStatus 0xC000035B (STATUS_BAD_BINDINGS) ──
+    # Das ist der direkte Beweis. Wenn dieses Event existiert, ist CBT die Ursache.
+    Write-Host "`n  [1/6] Event 4625 SubStatus 0xC000035B (STATUS_BAD_BINDINGS)" -ForegroundColor White
+    $xml1 = @"
+<QueryList><Query Id="0" Path="Security"><Select Path="Security">
+*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]]
+and *[EventData[Data[@Name='SubStatus']='0xc000035b']]
+</Select></Query></QueryList>
+"@
     try {
-        $xml401 = "<QueryList><Query Id='0' Path='Application'><Select Path='Application'>*[System[TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]] and *[EventData[Data='401']] or *[System[TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]] and *[EventData[Data[contains(.,'BAD_BINDINGS')]]]</Select></Query></QueryList>"
-        $raw = @(Get-WinEvent -FilterXml $xml401 -MaxEvents $Max -EA SilentlyContinue)
-        Write-Status "Application Log (401/BAD_BINDINGS)" "$(Format-EventCount $raw.Count $Max)" $(if ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+        $raw = @(Get-WinEvent -FilterXml $xml1 -MaxEvents $Max -EA Stop)
+        $summary['4625_BAD_BINDINGS'] = $raw.Count
+        Write-Status "    STATUS_BAD_BINDINGS" "$(Format-EventCount $raw.Count $Max)" $(if ($raw.Count -gt 0) {'Red'} else {'Green'})
+
         foreach ($evt in $raw) {
-            $events += [PSCustomObject]@{
-                Time = $evt.TimeCreated
-                Source = $evt.ProviderName
-                EventID = $evt.Id
-                Message = $evt.Message.Substring(0, [Math]::Min(200, $evt.Message.Length))
-                Log = 'Application'
-            }
-        }
-    } catch {
-        Write-Host "  Application Log: $_" -ForegroundColor DarkGray
-    }
-
-    # System Log: HTTP Service Fehler
-    try {
-        $raw2 = @(Get-WinEvent -FilterHashtable @{
-            LogName = 'System'
-            ProviderName = 'Microsoft-Windows-HttpService','HTTP Service'
-            StartTime = (Get-Date).AddMilliseconds(-$MsBack)
-        } -MaxEvents $Max -EA SilentlyContinue)
-        Write-Status "System Log (HttpService)" "$(Format-EventCount $raw2.Count $Max)" $(if ($raw2.Count -gt 0) {'Yellow'} else {'Green'})
-        foreach ($evt in $raw2) {
-            $events += [PSCustomObject]@{
-                Time = $evt.TimeCreated
-                Source = $evt.ProviderName
-                EventID = $evt.Id
-                Message = $evt.Message.Substring(0, [Math]::Min(200, $evt.Message.Length))
-                Log = 'System'
+            $x = [xml]$evt.ToXml()
+            $acct = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text' } catch { '?' }
+            $ws   = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'WorkstationName' }).'#text' } catch { '?' }
+            $ip   = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'IpAddress' }).'#text' } catch { '?' }
+            $proc = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'LogonProcessName' }).'#text' } catch { '?' }
+            $allEvents += [PSCustomObject]@{
+                Time=$evt.TimeCreated; Check='BAD_BINDINGS'; EventID=4625
+                Account=$acct; Source=$ws; IP=$ip; Detail="SubStatus=0xC000035B LogonProcess=$proc"
             }
         }
     } catch {
         if ($_.Exception.Message -notmatch 'No events were found|Es wurden keine') {
-            Write-Host "  System Log: $_" -ForegroundColor DarkGray
+            Write-Host "    Fehler: $($_.Exception.Message)" -ForegroundColor DarkGray
+        } else {
+            $summary['4625_BAD_BINDINGS'] = 0
+            Write-Status "    STATUS_BAD_BINDINGS" "0" 'Green'
         }
     }
 
-    # HTTPERR Logdateien
-    $httperrPath = "$env:SystemRoot\System32\LogFiles\HTTPERR"
+    # ── Check 2: Event 4625 SubStatus 0xC0000388 (STATUS_DOWNGRADE_DETECTED) ──
+    Write-Host "`n  [2/6] Event 4625 SubStatus 0xC0000388 (STATUS_DOWNGRADE_DETECTED)" -ForegroundColor White
+    $xml2 = @"
+<QueryList><Query Id="0" Path="Security"><Select Path="Security">
+*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]]
+and *[EventData[Data[@Name='SubStatus']='0xc0000388']]
+</Select></Query></QueryList>
+"@
+    try {
+        $raw = @(Get-WinEvent -FilterXml $xml2 -MaxEvents $Max -EA Stop)
+        $summary['4625_DOWNGRADE'] = $raw.Count
+        Write-Status "    DOWNGRADE_DETECTED" "$(Format-EventCount $raw.Count $Max)" $(if ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+
+        foreach ($evt in $raw) {
+            $x = [xml]$evt.ToXml()
+            $acct = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text' } catch { '?' }
+            $ip   = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'IpAddress' }).'#text' } catch { '?' }
+            $allEvents += [PSCustomObject]@{
+                Time=$evt.TimeCreated; Check='DOWNGRADE'; EventID=4625
+                Account=$acct; Source=''; IP=$ip; Detail="SubStatus=0xC0000388"
+            }
+        }
+    } catch {
+        if ($_.Exception.Message -match 'No events were found|Es wurden keine') {
+            $summary['4625_DOWNGRADE'] = 0
+            Write-Status "    DOWNGRADE_DETECTED" "0" 'Green'
+        }
+    }
+
+    # ── Check 3: Event 4625 mit Negotiate/Kerberos (breiteres Netz) ──
+    # Nicht-Passwort-Fehler bei Negotiate = entweder RC4 oder CBT
+    Write-Host "`n  [3/6] Event 4625 Negotiate (nicht Passwort-Fehler)" -ForegroundColor White
+    $xml3 = @"
+<QueryList><Query Id="0" Path="Security"><Select Path="Security">
+*[System[(EventID=4625) and TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]]
+and *[EventData[Data[@Name='AuthenticationPackageName']='Negotiate']]
+</Select></Query></QueryList>
+"@
+    $negotiate401 = 0
+    $negotiateNonPw = 0
+    try {
+        $raw = @(Get-WinEvent -FilterXml $xml3 -MaxEvents $Max -EA Stop)
+        $negotiate401 = $raw.Count
+        # Filtern: nur Fehler die NICHT Passwort-bezogen sind (0xC000006A = wrong pw, 0xC0000064 = user not found)
+        foreach ($evt in $raw) {
+            $x = [xml]$evt.ToXml()
+            $sub = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'SubStatus' }).'#text' } catch { '' }
+            if ($sub -notin @('0xc000006a','0xc0000064','0xc000006d','0xc0000071','0xc0000072','0xc0000234')) {
+                $negotiateNonPw++
+                $acct = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text' } catch { '?' }
+                $ip   = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'IpAddress' }).'#text' } catch { '?' }
+                $allEvents += [PSCustomObject]@{
+                    Time=$evt.TimeCreated; Check='Negotiate_NonPW'; EventID=4625
+                    Account=$acct; Source=''; IP=$ip; Detail="SubStatus=$sub AuthPkg=Negotiate"
+                }
+            }
+        }
+        $summary['4625_Negotiate'] = $negotiate401
+        $summary['4625_Negotiate_NonPW'] = $negotiateNonPw
+        Write-Status "    Negotiate gesamt" "$negotiate401"
+        Write-Status "    davon nicht Passwort" "$negotiateNonPw" $(if ($negotiateNonPw -gt 0) {'Yellow'} else {'Green'})
+    } catch {
+        if ($_.Exception.Message -match 'No events were found|Es wurden keine') {
+            $summary['4625_Negotiate'] = 0; $summary['4625_Negotiate_NonPW'] = 0
+            Write-Status "    Negotiate" "0" 'Green'
+        }
+    }
+
+    # ── Check 4: HttpService Events im System Log ──
+    Write-Host "`n  [4/6] System Log HttpService (SSL/TLS-Fehler)" -ForegroundColor White
+    try {
+        $raw = @(Get-WinEvent -FilterHashtable @{
+            LogName = 'System'
+            ProviderName = 'Microsoft-Windows-HttpService'
+            StartTime = (Get-Date).AddMilliseconds(-$MsBack)
+        } -MaxEvents $Max -EA SilentlyContinue)
+        $summary['HttpService'] = $raw.Count
+        Write-Status "    HttpService Events" "$(Format-EventCount $raw.Count $Max)" $(if ($raw.Count -gt 0) {'Yellow'} else {'Green'})
+        foreach ($evt in $raw) {
+            $allEvents += [PSCustomObject]@{
+                Time=$evt.TimeCreated; Check='HttpService'; EventID=$evt.Id
+                Account=''; Source=$evt.ProviderName; IP=''; Detail=$evt.Message.Substring(0, [Math]::Min(120, $evt.Message.Length))
+            }
+        }
+    } catch {
+        if ($_.Exception.Message -match 'No events were found|Es wurden keine') {
+            $summary['HttpService'] = 0
+            Write-Status "    HttpService Events" "0" 'Green'
+        }
+    }
+
+    # ── Check 5: HTTPERR Logdateien ──
+    Write-Host "`n  [5/6] HTTPERR Logdateien (BAD_BINDINGS, Negotiate+401)" -ForegroundColor White
+    $httperrPath = "${env:SystemRoot}\System32\LogFiles\HTTPERR"
+    $summary['HTTPERR_BAD_BINDINGS'] = 0
+    $summary['HTTPERR_Negotiate401'] = 0
     if (Test-Path $httperrPath) {
-        $cutoff = (Get-Date).AddHours(-$Hours)
+        $cutoff = (Get-Date).AddHours(-($MsBack / 3600000))
         $logFiles = @(Get-ChildItem $httperrPath -Filter 'httperr*.log' -EA SilentlyContinue |
             Where-Object { $_.LastWriteTime -ge $cutoff } |
             Sort-Object LastWriteTime -Descending |
-            Select-Object -First 5)
+            Select-Object -First 10)
 
-        $badBindings = 0
-        $negotiate401 = 0
         foreach ($lf in $logFiles) {
-            $lines = @(Get-Content $lf.FullName -Tail 500 -EA SilentlyContinue)
-            $badBindings += @($lines | Select-String 'BAD_BINDINGS' -SimpleMatch).Count
-            $negotiate401 += @($lines | Select-String 'Negotiate' | Select-String '401').Count
-        }
+            $lines = @(Get-Content $lf.FullName -Tail 1000 -EA SilentlyContinue)
 
-        Write-Status "HTTPERR BAD_BINDINGS" "$badBindings" $(if ($badBindings -gt 0) {'Red'} else {'Green'})
-        Write-Status "HTTPERR Negotiate+401" "$negotiate401" $(if ($negotiate401 -gt 0) {'Yellow'} else {'Green'})
+            $bb = @($lines | Select-String 'BAD_BINDINGS' -SimpleMatch)
+            $summary['HTTPERR_BAD_BINDINGS'] += $bb.Count
+            foreach ($match in $bb) {
+                # HTTPERR format: date time c-ip c-port s-ip s-port cs-version cs-method cs-uri ... reason
+                $parts = ($match.Line -split '\s+')
+                $allEvents += [PSCustomObject]@{
+                    Time=if($parts.Count -ge 2){"$($parts[0]) $($parts[1])"}else{''};
+                    Check='HTTPERR_BAD_BINDINGS'; EventID=0
+                    Account=''; Source=$lf.Name
+                    IP=if($parts.Count -ge 3){$parts[2]}else{''}
+                    Detail='STATUS_BAD_BINDINGS in HTTPERR'
+                }
+            }
+
+            $neg = @($lines | Select-String 'Negotiate' | Select-String '401')
+            $summary['HTTPERR_Negotiate401'] += $neg.Count
+        }
+        Write-Status "    BAD_BINDINGS" "$($summary['HTTPERR_BAD_BINDINGS'])" $(if ($summary['HTTPERR_BAD_BINDINGS'] -gt 0) {'Red'} else {'Green'})
+        Write-Status "    Negotiate+401" "$($summary['HTTPERR_Negotiate401'])" $(if ($summary['HTTPERR_Negotiate401'] -gt 0) {'Yellow'} else {'Green'})
+    }
+    else {
+        Write-Host "    HTTPERR-Pfad nicht gefunden" -ForegroundColor DarkGray
     }
 
-    return $events
+    # ── Check 6: Korrelation 4769 (Ticket OK) + 4625 (Auth Fehler) = CBT ──
+    # Wenn der KDC ein gueltiges AES-Ticket ausstellt (4769 Success)
+    # und innerhalb von 5 Sekunden ein 4625 fuer denselben Account kommt,
+    # ist das Ticket nicht das Problem — CBT ist die wahrscheinliche Ursache.
+    Write-Host "`n  [6/6] Korrelation: 4769-Success + 4625-Failure (gleicher Account, <5s)" -ForegroundColor White
+
+    $correlated = @()
+    try {
+        # Letzte erfolgreiche Service Tickets (nur AES = 0x11/0x12)
+        $xml4769 = @"
+<QueryList><Query Id="0" Path="Security"><Select Path="Security">
+*[System[(EventID=4769) and TimeCreated[timediff(@SystemTime) &lt;= $MsBack]]]
+and *[EventData[Data[@Name='Status']='0x0']]
+and *[EventData[(Data[@Name='TicketEncryptionType']='0x12') or (Data[@Name='TicketEncryptionType']='0x11')]]
+</Select></Query></QueryList>
+"@
+        $tickets = @(Get-WinEvent -FilterXml $xml4769 -MaxEvents ($Max * 2) -EA SilentlyContinue)
+
+        # Alle 4625 Negotiate-Fehler (bereits aus Check 3)
+        $failures = @($allEvents | Where-Object { $_.EventID -eq 4625 -and $_.Check -match 'Negotiate|BAD_BINDINGS' })
+
+        if ($tickets.Count -gt 0 -and $failures.Count -gt 0) {
+            # Index: Account → Ticket-Zeiten
+            $ticketIndex = @{}
+            foreach ($t in $tickets) {
+                $x = [xml]$t.ToXml()
+                $acct = try { ($x.Event.EventData.Data | Where-Object { $_.Name -eq 'TargetUserName' }).'#text' } catch { '' }
+                if ($acct -and $acct -ne '$') {
+                    $key = $acct.ToLower()
+                    if (-not $ticketIndex.ContainsKey($key)) { $ticketIndex[$key] = @() }
+                    $ticketIndex[$key] += $t.TimeCreated
+                }
+            }
+
+            # Korrelieren: 4625 innerhalb von 5s nach einem 4769 fuer denselben Account
+            foreach ($f in $failures) {
+                $acctKey = $f.Account.ToLower()
+                if ($ticketIndex.ContainsKey($acctKey)) {
+                    foreach ($tTime in $ticketIndex[$acctKey]) {
+                        $delta = ($f.Time - $tTime).TotalSeconds
+                        if ($delta -ge 0 -and $delta -le 5) {
+                            $correlated += [PSCustomObject]@{
+                                Time = $f.Time
+                                Account = $f.Account
+                                IP = $f.IP
+                                TicketTime = $tTime
+                                DeltaSeconds = [Math]::Round($delta, 1)
+                                Check = $f.Check
+                                Bewertung = 'Ticket gueltig (AES), Auth fehlgeschlagen → CBT wahrscheinlich'
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        $summary['Correlated'] = $correlated.Count
+        Write-Status "    Korrelierte Events" "$($correlated.Count)" $(if ($correlated.Count -gt 0) {'Red'} else {'Green'})
+
+        if ($correlated.Count -gt 0) {
+            Write-Host ""
+            Write-Host "    Korrelierte Accounts (Ticket OK → Auth Fehler):" -ForegroundColor Red
+            $correlated | Group-Object Account | Sort-Object Count -Descending | Select-Object -First 10 | ForEach-Object {
+                Write-Host "      $($_.Name.PadRight(25)) $($_.Count)x (Delta: $( ($_.Group | Measure-Object -Property DeltaSeconds -Average).Average )s)" -ForegroundColor Red
+            }
+        }
+    } catch {
+        $summary['Correlated'] = 0
+        Write-Host "    Korrelation nicht moeglich: $_" -ForegroundColor DarkGray
+    }
+
+    # ── Zusammenfassung ──
+    Write-Host "`n  --- ZUSAMMENFASSUNG EVENT-KORRELATION ---" -ForegroundColor Cyan
+    $evidence = ($summary['4625_BAD_BINDINGS'] -gt 0) -or ($summary['HTTPERR_BAD_BINDINGS'] -gt 0)
+    $suspicious = ($summary['4625_Negotiate_NonPW'] -gt 0) -or ($summary['Correlated'] -gt 0)
+
+    if ($evidence) {
+        Write-Host "  ERGEBNIS: CBT-Problem NACHGEWIESEN (STATUS_BAD_BINDINGS in Events)" -ForegroundColor Red
+        Write-Host "  Mitigation: DefaultAuthHardeningLevel = 0 auf betroffenen Servern" -ForegroundColor Red
+    }
+    elseif ($suspicious) {
+        Write-Host "  ERGEBNIS: CBT-Problem MOEGLICH (Negotiate-Fehler ohne Passwort-Ursache)" -ForegroundColor Yellow
+        Write-Host "  Empfehlung: HTTPERR-Logs und Network-Trace auf betroffenen Servern pruefen" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "  ERGEBNIS: Keine CBT-Indikatoren erkannt" -ForegroundColor Green
+    }
+
+    return @{
+        Events = $allEvents
+        Correlated = $correlated
+        Summary = $summary
+        Evidence = $evidence
+        Suspicious = $suspicious
+    }
 }
 
 #endregion
@@ -557,7 +758,8 @@ function Write-CBTBewertung {
     param(
         [array]$Results,
         [array]$Proxies,
-        $LocalStatus
+        $LocalStatus,
+        $EventResult
     )
 
     Write-Host "`n=== CBT BEWERTUNG ===" -ForegroundColor Cyan
@@ -631,6 +833,42 @@ function Write-CBTBewertung {
         }
     }
 
+    # Finding 5: Event-Korrelation
+    if ($EventResult) {
+        $sum = $EventResult.Summary
+        if ($EventResult.Evidence) {
+            $bbCount = if ($sum['4625_BAD_BINDINGS']) { $sum['4625_BAD_BINDINGS'] } else { 0 }
+            $heCount = if ($sum['HTTPERR_BAD_BINDINGS']) { $sum['HTTPERR_BAD_BINDINGS'] } else { 0 }
+            $findings += [PSCustomObject]@{
+                Nr=5; Typ='Fehler'
+                Bereich='STATUS_BAD_BINDINGS nachgewiesen'
+                Befund="$bbCount Event(s) 4625 mit SubStatus 0xC000035B, $heCount HTTPERR BAD_BINDINGS. CBT-Problem bestaetigt."
+                Bewertung="Kerberos-Tickets werden gueltig ausgestellt aber von HTTP.sys wegen fehlendem Channel Binding Hash abgelehnt. Sofort DefaultAuthHardeningLevel = 0 setzen."
+                Bedingung="Betrifft alle Clients die ueber TLS-terminierende Proxies zugreifen."
+            }
+        }
+        elseif ($EventResult.Suspicious) {
+            $corrCount = if ($sum['Correlated']) { $sum['Correlated'] } else { 0 }
+            $negCount  = if ($sum['4625_Negotiate_NonPW']) { $sum['4625_Negotiate_NonPW'] } else { 0 }
+            $findings += [PSCustomObject]@{
+                Nr=5; Typ='Warnung'
+                Bereich='CBT-Verdacht (Negotiate-Fehler ohne Passwort-Ursache)'
+                Befund="$negCount Negotiate-Auth-Fehler ohne Passwort-Ursache, $corrCount korreliert mit gueltigem AES-Ticket (<5s Delta)."
+                Bewertung="Kerberos-Ticket wurde gueltig ausgestellt, Authentifizierung ist trotzdem fehlgeschlagen. CBT ist die wahrscheinliche Ursache. HTTPERR-Logs und Network-Trace pruefen."
+                Bedingung="DefaultAuthHardeningLevel pruefen. Wenn 1 oder 2: auf 0 setzen und erneut testen."
+            }
+        }
+        elseif ($sum) {
+            $findings += [PSCustomObject]@{
+                Nr=5; Typ='Information'
+                Bereich='Event-Korrelation'
+                Befund="Keine CBT-Indikatoren in den Event-Logs. 0 STATUS_BAD_BINDINGS, 0 korrelierte Ticket/Auth-Fehler."
+                Bewertung="Kein CBT-Problem erkannt. Die Umgebung ist aktuell nicht betroffen."
+                Bedingung="Nach Installation von 2026.01B erneut pruefen."
+            }
+        }
+    }
+
     # Output
     foreach ($f in $findings) {
         $color = switch ($f.Typ) { 'Fehler' {'Red'}; 'Warnung' {'Yellow'}; default {'Green'} }
@@ -660,6 +898,7 @@ function Export-CBTReport {
         [array]$Proxies,
         [array]$Findings,
         [array]$Events,
+        [array]$Correlated,
         [string]$Path
     )
 
@@ -702,6 +941,12 @@ function Export-CBTReport {
         Write-Host "  CSV: CBT_Events.csv ($(SafeCount $Events))" -ForegroundColor Green
     }
 
+    # CSV: Korrelierte Events (Ticket OK → Auth Fehler)
+    if ((SafeCount $Correlated) -gt 0) {
+        $Correlated | Export-Csv (Join-Path $Path 'CBT_Correlated.csv') -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+        Write-Host "  CSV: CBT_Correlated.csv ($(SafeCount $Correlated)) — Ticket OK, Auth fehlgeschlagen" -ForegroundColor Red
+    }
+
     # Excel (optional)
     $hasExcel = $false
     try { Import-Module ImportExcel -EA Stop; $hasExcel = $true } catch {}
@@ -724,6 +969,13 @@ function Export-CBTReport {
                 (New-ConditionalText 'Information' -BackgroundColor '#E1F5EE' -ConditionalTextColor '#085041')
             )
             $Findings | Export-Excel -Path $xlPath -WorksheetName 'Findings' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText $ctFindings
+        }
+
+        if ((SafeCount $Correlated) -gt 0) {
+            $Correlated | Export-Excel -Path $xlPath -WorksheetName 'Korrelation' -AutoSize -FreezeTopRow -BoldTopRow -Append -ConditionalText @(
+                (New-ConditionalText 'BAD_BINDINGS'  -BackgroundColor '#FCEBEB' -ConditionalTextColor '#791F1F')
+                (New-ConditionalText 'CBT'           -BackgroundColor '#FFF8E1' -ConditionalTextColor '#633806')
+            )
         }
 
         Write-Host "  Excel: $xlPath" -ForegroundColor Green
@@ -755,7 +1007,7 @@ if ($ImportOnly) {
     Write-Host "  Verfuegbare Funktionen:" -ForegroundColor DarkGray
     Write-Host "    Get-TargetServers       Get-ProxyIndicators" -ForegroundColor DarkGray
     Write-Host "    Get-CBTStatus           Get-LocalCBTStatus" -ForegroundColor DarkGray
-    Write-Host "    Get-HttpErrEvents       Write-CBTBewertung" -ForegroundColor DarkGray
+    Write-Host "    Get-CBTEventCorrelation       Write-CBTBewertung" -ForegroundColor DarkGray
     Write-Host "    Export-CBTReport        Get-HardeningLabel" -ForegroundColor DarkGray
 }
 elseif (-not $script:_IsDotSourced) {
@@ -803,13 +1055,15 @@ elseif ($SkipRemoteCheck) {
 }
 
 # Phase 3: Events (lokal)
-$events = Get-HttpErrEvents -MsBack $msBack -Max $MaxEvents
+$eventResult = Get-CBTEventCorrelation -MsBack $msBack -Max $MaxEvents
+$events = $eventResult.Events
+$correlated = $eventResult.Correlated
 
 # Phase 4: Bewertung
-$findings = Write-CBTBewertung -Results $results -Proxies $proxies -LocalStatus $localStatus
+$findings = Write-CBTBewertung -Results $results -Proxies $proxies -LocalStatus $localStatus -EventResult $eventResult
 
 # Phase 5: Export
-Export-CBTReport -Results $results -Proxies $proxies -Findings $findings -Events $events -Path $reportDir
+Export-CBTReport -Results $results -Proxies $proxies -Findings $findings -Events $events -Correlated $correlated -Path $reportDir
 
 # Summary
 Write-Host ""
