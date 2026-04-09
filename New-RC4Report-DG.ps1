@@ -1,9 +1,9 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    RC4 Risikobewertung — DATAGROUP HTML Report Generator
+    RC4 Risikobewertung — Corporate Design HTML Report Generator
 .DESCRIPTION
-    Erzeugt einen DATAGROUP-gebrandeten RC4-Risikobewertungs-Report als HTML
+    Erzeugt einen Corporate-Design RC4-Risikobewertungs-Report als HTML
     aus den CSVs von Check-Server2025Defaults und Discover-RC4Environment.
     Oeffnen im Browser → Drucken als PDF.
     Keine externen Abhaengigkeiten — laeuft auf jedem Windows-System.
@@ -20,14 +20,14 @@
     .\New-RC4Report-DG.ps1 -ReportPath 'C:\Temp\RC4_DGBRS_20260320_132801' -Author 'Max Mustermann'
 .NOTES
     Version : 1.0
-    Design  : DATAGROUP Corporate Design (identisch mit Betriebshandbuch / HealthReport)
+    Design  : Corporate Design (Red Header/Footer, Carlito Font)
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ReportPath,
     [string]$OutputPath,
-    [string]$Author = "Jan Hübener",
+    [string]$Author = "",
     [string]$DomainLabel
 )
 
@@ -35,7 +35,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Continue'
 
 # ═══════════════════════════════════════════════════════════════
-# DATAGROUP Design System — PowerShell Classes
+# Corporate Design System — PowerShell Classes
 # ═══════════════════════════════════════════════════════════════
 
 class DGColor {
@@ -257,7 +257,7 @@ body {
 <head><meta charset="UTF-8"><title>$($this.Title)</title>$css</head>
 <body>
 <div class='dg-header'>
-    <div class='dg-header-left'>DATAGROUP</div>
+    <div class='dg-header-left'>$($this.Title.Split(' ')[0])</div>
     <div class='dg-header-right'>$($this.Category1)<br/>$($this.Category2)</div>
 </div>
 <div class='dg-content'>
@@ -320,7 +320,7 @@ function Get-EncCategoryFromValue {
 # DATA LOADING
 # ═══════════════════════════════════════════════════════════════
 
-Write-Host "`n=== DATAGROUP RC4 Report ===" -ForegroundColor Cyan
+Write-Host "`n=== RC4 Report (Corporate Design) ===" -ForegroundColor Cyan
 Write-Host "  Quelle: $ReportPath"
 
 if (-not (Test-Path $ReportPath)) {
@@ -541,7 +541,7 @@ $doc = [DGDocument]::new(
     "RC4 Risikobewertung — $DomainLabel",
     'Risikobewertung',
     'Kerberos RC4 / Server 2025',
-    "DATAGROUP  |  RC4 Risikobewertung  |  Vertraulich"
+    "RC4 Risikobewertung"
 )
 $h = $doc.Html
 
@@ -554,7 +554,7 @@ $h.MetaTable(@(
     @("Domäne:", $DomainLabel),
     @("Stichtag:", (Get-Date -Format 'yyyy-MM-dd HH:mm')),
     @("Erstellt von:", $Author),
-    @("Klassifikation:", "<span class='dg-warn-red'>Vertraulich</span>"),
+    
     @("Datenquelle:", (Split-Path $ReportPath -Leaf))
 ))
 $h.Spacer()
@@ -669,7 +669,7 @@ $h.Bullet("<a href='https://borncity.com/blog/2026/01/20/windows-januar-2026-upd
 $h.Bullet("<a href='https://www.heise.de/news/Microsoft-Erinnerung-an-naechste-Phase-der-Kerberos-RC4-Haertung-11217286.html'>heise: Microsoft-Erinnerung an Kerberos-RC4-Haertung</a>")
 
 $h.Spacer()
-$h.AppendLine("<div class='dg-footer'><span>DATAGROUP | RC4 Risikobewertung — ${DomainLabel}</span><span>Stichtag: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</span></div>")
+$h.AppendLine("<div class='dg-footer'><span>RC4 Risikobewertung — ${DomainLabel}</span><span>Stichtag: $(Get-Date -Format 'yyyy-MM-dd HH:mm')</span></div>")
 
 # ═══════════════════════════════════════════════════════════════
 # SAVE
