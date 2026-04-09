@@ -17,8 +17,8 @@
     in derselben Kerberos-Schicht, mit denselben Symptomen (401), aber
     unterschiedlicher Ursache und unterschiedlicher Mitigation.
 
-.PARAMETER Scope
-    DomainControllers, MemberServers oder All.
+.PARAMETER TargetScope
+    DiscoveredOnly (Standard: nur IIS/Exchange/Citrix/ADFS/Web), AllServers oder Full.
 
 .PARAMETER Hours
     Zeitraum fuer Event-Log-Suche in Stunden (HTTPERR, IIS, Application).
@@ -37,7 +37,7 @@
 
 .EXAMPLE
     .\Find-CBTExposure.ps1
-    .\Find-CBTExposure.ps1 -Scope DomainControllers
+    .\Find-CBTExposure.ps1 -TargetScope AllServers
     .\Find-CBTExposure.ps1 -SkipRemoteCheck
     . .\Find-CBTExposure.ps1 -ImportOnly
 
@@ -53,8 +53,8 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('DomainControllers','MemberServers','All')]
-    [string]$Scope = 'All',
+    [ValidateSet('DiscoveredOnly','AllServers','Full')]
+    [string]$TargetScope = 'DiscoveredOnly',
     [int]$Hours = 24,
     [int]$MaxEvents = 500,
     [string]$ReportPath = 'C:\Temp',
@@ -120,26 +120,153 @@ function Get-HardeningBewertung {
 #region ============ DISCOVERY ============
 
 function Get-TargetServers {
+    <#
+    .SYNOPSIS
+        Findet Server die fuer CBT-Pruefung relevant sind.
+        DiscoveredOnly: Nur Server mit IIS/Exchange/Citrix/ADFS/Web-Rollen (~20-50 statt 5000).
+        AllServers: Alle Server-OS Objekte.
+        Full: Alle Computer inkl. Workstations.
+    #>
     [CmdletBinding()]
-    param([string]$Scope)
+    param([string]$TargetScope)
 
-    Write-Host "`n=== SERVER DISCOVERY ===" -ForegroundColor Cyan
+    Write-Host "`n=== SERVER DISCOVERY ($TargetScope) ===" -ForegroundColor Cyan
 
     $servers = @()
-    try {
-        $filter = switch ($Scope) {
-            'DomainControllers' { { $_.OperatingSystem -like '*Server*' -and $_.userAccountControl -band 8192 } }
-            'MemberServers'     { { $_.OperatingSystem -like '*Server*' -and -not ($_.userAccountControl -band 8192) } }
-            'All'               { { $_.OperatingSystem -like '*Server*' } }
+
+    if ($TargetScope -eq 'DiscoveredOnly') {
+        # Phase 1: Rollen-basierte Erkennung — nur Server die HTTP.sys/IIS/Kerberos-Auth verwenden
+        $discovered = @{}
+
+        # Domain Controllers (immer relevant — haben IIS fuer CertSrv, ADWS, etc.)
+        try {
+            $dcs = @(Get-ADDomainController -Filter * -EA Stop)
+            foreach ($dc in $dcs) {
+                $key = $dc.HostName.ToLower()
+                if (-not $discovered.ContainsKey($key)) {
+                    $discovered[$key] = [PSCustomObject]@{ DNSHostName=$dc.HostName; Name=$dc.Name; Role='DC' }
+                }
+            }
+            Write-Status "Domain Controller" "$(SafeCount $dcs)"
+        } catch { Write-Host "  DC-Abfrage fehlgeschlagen: $_" -ForegroundColor DarkGray }
+
+        # Exchange Server (ServiceConnectionPoint)
+        try {
+            $exchSCPs = @(Get-ADObject -Filter "objectClass -eq 'serviceConnectionPoint' -and Name -like '*Exchange*'" -Properties keywords, serviceBindingInformation -EA SilentlyContinue |
+                Where-Object { $_.keywords -match '77378F46-2C66-4aa9-A6A6-3E7A48B19596' })
+            foreach ($scp in $exchSCPs) {
+                $uri = $scp.serviceBindingInformation | Select-Object -First 1
+                if ($uri -match 'https?://([^/]+)') {
+                    $fqdn = $Matches[1].ToLower()
+                    if (-not $discovered.ContainsKey($fqdn)) {
+                        $comp = try { Get-ADComputer -Filter "DNSHostName -eq '$fqdn'" -Properties DNSHostName -EA Stop | Select-Object -First 1 } catch { $null }
+                        $discovered[$fqdn] = [PSCustomObject]@{ DNSHostName=$fqdn; Name=($fqdn -split '\.')[0]; Role='Exchange' }
+                    }
+                }
+            }
+            Write-Status "Exchange Server" "$(@($discovered.Values | Where-Object { $_.Role -eq 'Exchange' }).Count)"
+        } catch {}
+
+        # Citrix (DDC, StoreFront, NetScaler — gleiche Patterns wie Discover-RC4Environment)
+        $citrixPatterns = @('*citrix*','*ddc*','*storefront*','*sfr*','*vda*','*netscaler*','*adc*','*xen*')
+        $citrixCount = 0
+        foreach ($pattern in $citrixPatterns) {
+            try {
+                $found = @(Get-ADComputer -Filter "Name -like '$pattern'" -Properties DNSHostName, OperatingSystem -EA SilentlyContinue |
+                    Where-Object { $_.OperatingSystem -like '*Server*' -and $_.Enabled -ne $false })
+                foreach ($f in $found) {
+                    $key = $f.DNSHostName.ToLower()
+                    if (-not $discovered.ContainsKey($key)) {
+                        $discovered[$key] = [PSCustomObject]@{ DNSHostName=$f.DNSHostName; Name=$f.Name; Role='Citrix' }
+                        $citrixCount++
+                    }
+                }
+            } catch {}
         }
+        if ($citrixCount -gt 0) { Write-Status "Citrix Server" "$citrixCount" }
 
-        $raw = @(Get-ADComputer -Filter 'OperatingSystem -like "*Server*"' -Properties OperatingSystem, OperatingSystemVersion, DNSHostName, userAccountControl -EA Stop)
-        $servers = @($raw | Where-Object $filter | Where-Object { $_.Enabled -ne $false })
+        # ADFS
+        try {
+            $adfs = @(Get-ADObject -Filter "objectClass -eq 'serviceConnectionPoint' -and Name -eq 'ADFS'" -EA SilentlyContinue)
+            foreach ($a in $adfs) {
+                $parent = try { Get-ADComputer -Identity ($a.DistinguishedName -replace '^CN=[^,]+,','') -Properties DNSHostName -EA Stop } catch { $null }
+                if ($parent -and $parent.DNSHostName) {
+                    $key = $parent.DNSHostName.ToLower()
+                    if (-not $discovered.ContainsKey($key)) {
+                        $discovered[$key] = [PSCustomObject]@{ DNSHostName=$parent.DNSHostName; Name=$parent.Name; Role='ADFS' }
+                    }
+                }
+            }
+            $adfsCount = @($discovered.Values | Where-Object { $_.Role -eq 'ADFS' }).Count
+            if ($adfsCount -gt 0) { Write-Status "ADFS Server" "$adfsCount" }
+        } catch {}
 
-        Write-Status "Server gefunden" "$(SafeCount $servers) ($Scope)"
+        # Web-Server (Name-Patterns die auf IIS/Web hindeuten)
+        $webPatterns = @('*web*','*iis*','*www*','*app*','*portal*','*intranet*','*sharepoint*','*sps*','*owa*','*wac*','*oos*')
+        $webCount = 0
+        foreach ($pattern in $webPatterns) {
+            try {
+                $found = @(Get-ADComputer -Filter "Name -like '$pattern'" -Properties DNSHostName, OperatingSystem -EA SilentlyContinue |
+                    Where-Object { $_.OperatingSystem -like '*Server*' -and $_.Enabled -ne $false })
+                foreach ($f in $found) {
+                    $key = $f.DNSHostName.ToLower()
+                    if (-not $discovered.ContainsKey($key)) {
+                        $discovered[$key] = [PSCustomObject]@{ DNSHostName=$f.DNSHostName; Name=$f.Name; Role='Web/App' }
+                        $webCount++
+                    }
+                }
+            } catch {}
+        }
+        if ($webCount -gt 0) { Write-Status "Web/App Server" "$webCount" }
+
+        # Constrained Delegation Targets (diese machen HTTP-basierte Delegation)
+        try {
+            $kcd = @(Get-ADComputer -Filter 'msDS-AllowedToDelegateTo -like "*"' -Properties DNSHostName, 'msDS-AllowedToDelegateTo' -EA SilentlyContinue |
+                Where-Object { $_.Enabled -ne $false })
+            foreach ($k in $kcd) {
+                $key = $k.DNSHostName.ToLower()
+                if (-not $discovered.ContainsKey($key)) {
+                    $discovered[$key] = [PSCustomObject]@{ DNSHostName=$k.DNSHostName; Name=$k.Name; Role='KCD-Source' }
+                }
+                # Auch die Ziel-Server hinzufuegen
+                foreach ($target in $k.'msDS-AllowedToDelegateTo') {
+                    if ($target -match 'http/([^:]+)') {
+                        $tFqdn = $Matches[1].ToLower()
+                        if (-not $discovered.ContainsKey($tFqdn)) {
+                            $comp = try { Get-ADComputer -Filter "DNSHostName -eq '$tFqdn'" -Properties DNSHostName -EA Stop | Select-Object -First 1 } catch { $null }
+                            if ($comp) {
+                                $discovered[$tFqdn] = [PSCustomObject]@{ DNSHostName=$tFqdn; Name=($tFqdn -split '\.')[0]; Role='KCD-Target' }
+                            }
+                        }
+                    }
+                }
+            }
+            $kcdCount = @($discovered.Values | Where-Object { $_.Role -match 'KCD' }).Count
+            if ($kcdCount -gt 0) { Write-Status "KCD Source/Target" "$kcdCount" }
+        } catch {}
+
+        $servers = @($discovered.Values)
+        Write-Status "Gesamt (DiscoveredOnly)" "$(SafeCount $servers)" 'Cyan'
+
+        # Show role breakdown
+        $servers | Group-Object Role | Sort-Object Count -Descending | ForEach-Object {
+            Write-Host "    $($_.Name.PadRight(20)) $($_.Count)" -ForegroundColor DarkGray
+        }
     }
-    catch {
-        Write-Host "  AD-Abfrage fehlgeschlagen: $_" -ForegroundColor Red
+    else {
+        # AllServers or Full
+        try {
+            $ldapFilter = if ($TargetScope -eq 'AllServers') { 'OperatingSystem -like "*Server*"' } else { 'OperatingSystem -like "*"' }
+            $raw = @(Get-ADComputer -Filter $ldapFilter -Properties OperatingSystem, DNSHostName -EA Stop |
+                Where-Object { $_.Enabled -ne $false })
+            $servers = @($raw | ForEach-Object {
+                [PSCustomObject]@{ DNSHostName=$_.DNSHostName; Name=$_.Name; Role=$_.OperatingSystem }
+            })
+            Write-Status "Server gefunden" "$(SafeCount $servers) ($TargetScope)"
+        }
+        catch {
+            Write-Host "  AD-Abfrage fehlgeschlagen: $_" -ForegroundColor Red
+        }
     }
 
     return $servers
@@ -640,14 +767,14 @@ Write-Host ""
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host "  CBT Exposure Analysis v1.0" -ForegroundColor Cyan
 Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
-Write-Host "  Scope: $Scope | Zeitraum: $Hours Stunden" -ForegroundColor Cyan
+Write-Host "  Scope: $TargetScope | Zeitraum: $Hours Stunden" -ForegroundColor Cyan
 Write-Host "  Report: $reportDir" -ForegroundColor Cyan
 Write-Host "=================================================================" -ForegroundColor Cyan
 
 # Phase 1: Discovery
 $localStatus = Get-LocalCBTStatus
 $proxies = Get-ProxyIndicators
-$servers = Get-TargetServers -Scope $Scope
+$servers = Get-TargetServers -TargetScope $TargetScope
 
 # Phase 2: Remote Check
 $results = @()
