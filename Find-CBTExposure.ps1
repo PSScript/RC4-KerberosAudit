@@ -739,7 +739,6 @@ function Write-CBTBewertung {
     Write-Host "`n=== CBT BEWERTUNG ===" -ForegroundColor Cyan
 
     $findings = @()
-    $proxyNames = @($Proxies | ForEach-Object { $_.Name.ToLower() })
 
     # Per-Server Bewertung
     foreach ($r in $Results) {
