@@ -18,6 +18,7 @@
       3024  EPA    — Client sendet keinen SPN       (nur mit -IncludeEpa)
       3025  EPA    — Client sendet unbekannten SPN  (nur mit -IncludeEpa)
       3026  EPA    — Client sendet leeren SPN       (nur mit -IncludeEpa)
+      3000  SMB1   — SMB1-Zugriffsversuch (Protokoll genutzt) (nur mit -IncludeSmb1Access)
 
     Feld-Extraktion erfolgt ueber die EventData-XML (sprachneutral), NICHT ueber
     den gerenderten Meldungstext — Kundensysteme sind deutschsprachig, dort waeren
@@ -46,7 +47,11 @@
     Zusaetzlich EPA-Events 3024/3025/3026 sammeln.
 
 .PARAMETER ExcludeSmb1
-    Event 3027 (SMBv1) auslassen.
+    Event 3027 (SMBv1-Signing) auslassen.
+
+.PARAMETER IncludeSmb1Access
+    Zusaetzlich Event 3000 (SMB1-Zugriffsversuch) sammeln. Benoetigt separates
+    Audit (AuditSmb1Access).
 
 .PARAMETER ReportPath
     Zielordner. Standard C:\Temp
@@ -64,16 +69,22 @@
     .\Find-SmbSigningExposure.ps1
     .\Find-SmbSigningExposure.ps1 -TargetScope AllServers -Hours 336
     .\Find-SmbSigningExposure.ps1 -ComputerName DC01,DC02 -IncludeEpa
+    .\Find-SmbSigningExposure.ps1 -SkipRemoteCheck -IncludeEpa -IncludeSmb1Access
     .\Find-SmbSigningExposure.ps1 -SkipRemoteCheck -ShowSample
 
 .NOTES
-    Version  : 1.0
+    Version  : 1.1
     Kontext  : SMB Server Signing Hardening — Betroffene VOR Enforcement finden
     Referenz : KB5066913 (CVE-2025-55234)
     Log      : Microsoft-Windows-SMBServer/Audit
+    Schalter : Drei getrennte Audit-Schalter, drei Kategorien:
+               Signing -> AuditClientDoesNotSupportSigning  -> 3021/3027
+               EPA     -> AuditClientSpnSupport             -> 3024/3025/3026
+               SMB1    -> AuditSmb1Access                   -> 3000
     Hinweise : 3027/SMBv1 ist laut Microsoft nicht eindeutig (False Positives/Negatives).
                Client signiert, kuendigt es aber nicht an   -> False Positive.
                Client kuendigt Signing an, kann es aber nicht -> False Negative.
+               EPA (3024-3026) ist KEIN Signing-Problem: SPN/DNS pruefen, kein Firmware-Thema.
     Voraussetzung: Audit aktiv (Get-SmbSigningPosture.ps1 zur Pruefung).
 #>
 
@@ -86,6 +97,7 @@ param(
     [int]$MaxEvents = 5000,
     [switch]$IncludeEpa,
     [switch]$ExcludeSmb1,
+    [switch]$IncludeSmb1Access,
     [string]$ReportPath = 'C:\Temp',
     [switch]$SkipRemoteCheck,
     [switch]$ShowSample,
@@ -108,21 +120,33 @@ $reportDir = Join-Path $ReportPath "SMBExpo_${domainShort}_${ts}"
 function SafeCount { param($C) if ($null -eq $C) {0} elseif ($C -is [array]) {$C.Length} else {1} }
 
 # Holt einen EventData-Wert: erst per Name-Kandidaten, dann per Position.
+# Robust gegen beide PowerShell-Repraesentationen der Data-Knoten:
+#   - mit Name-Attribut  -> XmlElement (Name/InnerText nutzbar)
+#   - ohne Name-Attribut -> kollabiert zu reinem String (kein '#text'/Name)
 function Get-EvField {
     param($DataNodes, [string[]]$Names, [int]$Index = -1)
+    $arr = @($DataNodes)
+
+    # Named (nur moeglich, wenn die Knoten Name-Attribute tragen)
     foreach ($n in $Names) {
-        try {
-            $hit = $DataNodes | Where-Object { $_.Name -eq $n } | Select-Object -First 1
-            if ($null -ne $hit -and $null -ne $hit.'#text') { return [string]$hit.'#text' }
-        } catch {}
+        foreach ($node in $arr) {
+            try {
+                if ($node -isnot [string]) {
+                    if (([string]$node.Name) -eq $n) {
+                        $txt = [string]$node.InnerText
+                        if ($txt -ne '') { return $txt }
+                    }
+                }
+            } catch {}
+        }
     }
-    if ($Index -ge 0) {
+
+    # Positional (Fallback) — haelt String und XmlElement aus
+    if ($Index -ge 0 -and $arr.Count -gt $Index) {
         try {
-            $arr = @($DataNodes)
-            if ($arr.Count -gt $Index) {
-                $val = $arr[$Index].'#text'
-                if ($null -ne $val) { return [string]$val }
-            }
+            $node = $arr[$Index]
+            $val  = if ($node -is [string]) { $node } else { [string]$node.InnerText }
+            if ($null -ne $val -and "$val" -ne '') { return [string]$val }
         } catch {}
     }
     return ''
@@ -131,6 +155,7 @@ function Get-EvField {
 function Get-EventIdMeaning {
     param([int]$Id)
     switch ($Id) {
+        3000 { 'SMB1: Zugriffsversuch (SMB1-Protokoll genutzt)' }
         3021 { 'SMB2/3: Client unterstuetzt kein Signing' }
         3027 { 'SMB1: SMBv1-Client ohne Signing (unzuverlaessig)' }
         3024 { 'EPA: kein SPN gesendet' }
@@ -138,6 +163,32 @@ function Get-EventIdMeaning {
         3026 { 'EPA: leerer SPN' }
         default { "Event $Id" }
     }
+}
+
+# Drei Kategorien = drei getrennte Audit-Schalter / drei Remediations-Pfade.
+function Get-EventCategory {
+    param([int]$Id)
+    switch ($Id) {
+        3000 { 'SMB1-Access' }
+        3021 { 'Signing' }
+        3027 { 'Signing' }
+        3024 { 'EPA' }
+        3025 { 'EPA' }
+        3026 { 'EPA' }
+        default { 'Sonstige' }
+    }
+}
+
+# Kategorie-spezifische Handlungsempfehlung (ein Client kann mehrere Kategorien treffen).
+function Get-CategoryBewertung {
+    param([int[]]$EventIds)
+    $cats  = @($EventIds | ForEach-Object { Get-EventCategory $_ } | Sort-Object -Unique)
+    $parts = @()
+    if ($cats -contains 'Signing')     { $parts += 'Signing: bei RequireSecuritySignature-Enforcement betroffen. Client-Signing aktivieren / SMB-Version / Firmware.' }
+    if ($cats -contains 'EPA')         { $parts += 'EPA: SPN-Mismatch, kein Signing-Problem. SPN/DNS pruefen (z.B. veralteter/aliasierter Servername), kein Firmware-Thema.' }
+    if ($cats -contains 'SMB1-Access') { $parts += 'SMB1: Protokoll im Einsatz. Bei SMB1-Deaktivierung betroffen. SMB1 am Client abschalten / Client modernisieren.' }
+    if ($parts.Count -eq 0) { $parts += 'Pruefen.' }
+    return ($parts -join ' | ')
 }
 
 #endregion
@@ -229,6 +280,7 @@ function Get-SigningAuditEvents {
         $client = Get-EvField $data @('ClientName','Client','ClientAddress','ClientNameOrAddress') 0
         $user   = ''
         $reqSig = ''
+        $detail = ''
 
         switch ($id) {
             3021 {
@@ -238,9 +290,10 @@ function Get-SigningAuditEvents {
             3027 {
                 $reqSig = Get-EvField $data @('ServerSigningRequired','ServerRequiresSigning','RequireSigning','SigningRequired') 1
             }
-            3024 { $user = Get-EvField $data @('SpnQueryStatus','Status') 1 }
-            3025 { $user = Get-EvField $data @('Spn','SPN','ServicePrincipalName') 1 }
-            3026 { $user = '' }
+            3024 { $detail = Get-EvField $data @('SpnQueryStatus','Status') 1 }
+            3025 { $detail = Get-EvField $data @('Spn','SPN','ServicePrincipalName') 1 }
+            3026 { $detail = 'leerer SPN' }
+            3000 { }   # nur Client Address (bereits in $client)
         }
 
         $reliability = if ($id -eq 3027) { 'SMBv1 — unzuverlaessig (verifizieren)' } else { 'OK' }
@@ -249,9 +302,11 @@ function Get-SigningAuditEvents {
             Server         = $Computer
             TimeCreated    = $evt.TimeCreated
             EventId        = $id
+            Kategorie      = Get-EventCategory $id
             Bedeutung      = Get-EventIdMeaning $id
             ClientName     = $client
             UserName       = $user
+            Detail         = $detail
             ServerRequires = $reqSig
             Reliability    = $reliability
             Message        = ($evt.Message -replace '\s+', ' ').Trim()
@@ -267,36 +322,39 @@ function Get-AffectedClientSummary {
               Group-Object { $_.ClientName.ToLower() }
 
     $summary = foreach ($g in $groups) {
-        $items   = @($g.Group)
-        $ids     = @($items.EventId | Sort-Object -Unique) -join ','
-        $servers = @($items.Server  | Sort-Object -Unique) -join ','
-        $users   = @($items | Where-Object { $_.UserName -and $_.UserName -ne '' } | Select-Object -ExpandProperty UserName -Unique)
-        $sample  = if ($users.Count -gt 0) { $users[0] } else { '' }
+        $items    = @($g.Group)
+        $eventIds = @($items.EventId | Sort-Object -Unique)
+        $ids      = $eventIds -join ','
+        $cats     = @($eventIds | ForEach-Object { Get-EventCategory $_ } | Sort-Object -Unique) -join ','
+        $servers  = @($items.Server | Sort-Object -Unique) -join ','
 
-        $nonSmb1 = @($items.EventId | Where-Object { $_ -ne 3027 }).Count
-        $relWorst = if (($items.EventId -contains 3027) -and $nonSmb1 -eq 0) {
-            'SMBv1 — unzuverlaessig (verifizieren)'
-        } else { 'OK' }
+        # repraesentatives Detail (SPN bei EPA, sonst User bei Signing)
+        $detItems = @($items | Where-Object { $_.Detail   -and $_.Detail   -ne '' } | Select-Object -ExpandProperty Detail   -Unique)
+        $usrItems = @($items | Where-Object { $_.UserName -and $_.UserName -ne '' } | Select-Object -ExpandProperty UserName -Unique)
+        $detail   = if ($detItems.Count -gt 0) { $detItems -join ' / ' } elseif ($usrItems.Count -gt 0) { $usrItems[0] } else { '' }
 
-        $bewertung = if ($relWorst -ne 'OK') {
-            'Warnung — nur SMBv1-Signal. Vor Remediation funktional verifizieren.'
-        } else {
-            'Fehler — wuerde bei Enforcement abgewiesen. Remediation noetig (Firmware/Config/SMB-Version).'
-        }
+        # unsicher nur, wenn ausschliesslich 3027 (SMBv1-Signing)
+        $non3027  = @($eventIds | Where-Object { $_ -ne 3027 }).Count
+        $relWorst = if (($eventIds -contains 3027) -and $non3027 -eq 0) { 'SMBv1 — unzuverlaessig (verifizieren)' } else { 'OK' }
+
+        # 3021 = bei Signing-Enforcement sicher blockiert -> Fehler; sonst (EPA/SMB1/3027) Warnung
+        $severity = if ($eventIds -contains 3021) { 'Fehler' } else { 'Warnung' }
 
         [PSCustomObject][ordered]@{
             ClientName  = $items[0].ClientName
+            Kategorien  = $cats
             EventIds    = $ids
             Count       = $items.Count
             FirstSeen   = ($items.TimeCreated | Sort-Object | Select-Object -First 1)
             LastSeen    = ($items.TimeCreated | Sort-Object | Select-Object -Last 1)
             ObservedOn  = $servers
-            SampleUser  = $sample
+            Detail      = $detail
             Reliability = $relWorst
-            Bewertung   = $bewertung
+            Severity    = $severity
+            Bewertung   = (Get-CategoryBewertung $eventIds)
         }
     }
-    return @($summary | Sort-Object @{E='Reliability';Descending=$false}, @{E='Count';Descending=$true})
+    return @($summary | Sort-Object @{E='Severity';Descending=$false}, @{E='Count';Descending=$true})
 }
 
 #endregion
@@ -360,13 +418,14 @@ if ($ImportOnly) {
 elseif (-not $script:_IsDotSourced) {
 
     $ids = @(3021)
-    if (-not $ExcludeSmb1) { $ids += 3027 }
-    if ($IncludeEpa)       { $ids += 3024,3025,3026 }
+    if (-not $ExcludeSmb1)   { $ids += 3027 }
+    if ($IncludeEpa)         { $ids += 3024,3025,3026 }
+    if ($IncludeSmb1Access)  { $ids += 3000 }
     $ids = @($ids | Sort-Object -Unique)
 
     Write-Host ""
     Write-Host "=================================================================" -ForegroundColor Cyan
-    Write-Host "  SMB Signing Exposure v1.0  (Betroffene vor Enforcement)" -ForegroundColor Cyan
+    Write-Host "  SMB Signing Exposure v1.1  (Betroffene vor Enforcement)" -ForegroundColor Cyan
     Write-Host "  Domaene: $domainFQDN ($domainShort)" -ForegroundColor Cyan
     Write-Host "  Scope: $TargetScope | Fenster: $Hours h | Event-IDs: $($ids -join ',')" -ForegroundColor Cyan
     Write-Host "  Report: $reportDir" -ForegroundColor Cyan
@@ -403,10 +462,10 @@ elseif (-not $script:_IsDotSourced) {
 
     Write-Host "`n=== BETROFFENE CLIENTS ===" -ForegroundColor Cyan
     if ((SafeCount $summary) -gt 0) {
-        $summary | Format-Table ClientName, EventIds, Count, LastSeen, Reliability -AutoSize
-        $hard = @($summary | Where-Object { $_.Reliability -eq 'OK' }).Count
-        $soft = @($summary | Where-Object { $_.Reliability -ne 'OK' }).Count
-        Write-Host ("  {0} eindeutige Clients wuerden bei Enforcement abgewiesen ({1} zuverlaessig, {2} nur SMBv1)." -f (SafeCount $summary), $hard, $soft) -ForegroundColor Yellow
+        $summary | Format-Table ClientName, Kategorien, EventIds, Count, LastSeen, Severity -AutoSize
+        $fehler = @($summary | Where-Object { $_.Severity -eq 'Fehler'  }).Count
+        $warn   = @($summary | Where-Object { $_.Severity -eq 'Warnung' }).Count
+        Write-Host ("  {0} eindeutige Clients mit Audit-Treffern ({1} Fehler, {2} Warnung). Kategorien beachten — EPA ist kein Signing-Problem." -f (SafeCount $summary), $fehler, $warn) -ForegroundColor Yellow
     } else {
         Write-Host "  Keine Treffer im Zeitraum." -ForegroundColor Green
         Write-Host "  Pruefen: (1) Audit aktiv? -> Get-SmbSigningPosture.ps1   (2) Fenster (-Hours) gross genug?" -ForegroundColor DarkGray
