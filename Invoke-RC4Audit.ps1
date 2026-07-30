@@ -89,6 +89,15 @@
     Mit -Mode Full: kompletter Audit ueber alle Server der Domaene.
     (KerberosScope Full — gesamte Domaene inkl. User/gMSA/Trusts — bleibt explizit.)
 
+.PARAMETER CompareBefore
+    (Compare) Vorher-Report: Pfad/Wildcard auf SMB_Kerberos_report_*.csv.
+    Ohne Angabe: aeltester Hauptreport unter -ReportPath.
+
+.PARAMETER CompareAfter
+    (Compare) Nachher-Report. Ohne Angabe: neuester Hauptreport unter -ReportPath.
+    -Mode Compare akkumuliert pro Einstellung was sich geaendert hat — ueber alle
+    Server ("Was hat das Update umgestellt?"). Nur CSV-Auswertung, kein AD/WinRM.
+
 .EXAMPLE
     .\Invoke-RC4Audit.ps1 -Mode Readiness
     .\Invoke-RC4Audit.ps1 -Mode Prove -Hours 168
@@ -113,7 +122,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
     Justification = 'Parameter werden in den gekapselten Modus-Funktionen via dynamischem Scope verwendet (Invoke-Mode*)')]
 param(
-    [ValidateSet('Readiness', 'Prove', 'Discover', 'Report', 'Full')]
+    [ValidateSet('Readiness', 'Prove', 'Discover', 'Report', 'Full', 'Compare')]
     [string]$Mode = 'Full',
 
     # Gemeinsam
@@ -151,7 +160,11 @@ param(
     [switch]$ImportOnly,
 
     # Breiten-Schalter: setzt Scope=AllServers und KerberosScope=AllServers
-    [switch]$DiscoverAll
+    [switch]$DiscoverAll,
+
+    # Compare (Baseline-Diff zweier Readiness-Reports)
+    [string]$CompareBefore,
+    [string]$CompareAfter
 )
 
 Set-StrictMode -Version 2
@@ -4958,6 +4971,121 @@ function Invoke-ReportDG {
 }
 #endregion
 
+#region ============ MODUS: COMPARE (Baseline-Diff ueber alle Server) ============
+
+# Vergleicht zwei Readiness-Reports (SMB_Kerberos_report_*.csv) und akkumuliert
+# pro Einstellung, was sich zwischen Vorher und Nachher geaendert hat — ueber
+# ALLE Server. Beantwortet: "Was hat das Update umgestellt?"
+# Kein AD, kein WinRM, keine Events — reine CSV-Auswertung. Strict-safe.
+function Invoke-ModeCompare {
+    Set-StrictMode -Version 2
+
+    $settingCols = @('SMB_Server_Require','SMB_Client_Require','Kerb_EncTypes','Kerb_Source',
+                     'LDAP_ServerIntegrity','LDAP_ChannelBinding','NTLM_Restrict',
+                     'OSBuild','IsServer2025','RiskLevel')
+
+    function Resolve-ReportCsv {
+        param([string]$P, [string]$Label)
+        if (-not $P) { return $null }
+        $hits = @(Get-ChildItem -Path $P -File -EA SilentlyContinue |
+                  Where-Object { $_.Name -notmatch '_KerberosAudit|_recommendations|_urgent_fix' })
+        if ($hits.Count -eq 0) { Write-Host "  FEHLER ($Label): keine Datei unter $P" -ForegroundColor Red; return $null }
+        if ($hits.Count -gt 1) {
+            Write-Host "  $Label — mehrere Treffer, nehme neueste:" -ForegroundColor Yellow
+            $hits | ForEach-Object { Write-Host "    $($_.Name)" -ForegroundColor DarkGray }
+            $hits = @($hits | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+        }
+        return $hits[0].FullName
+    }
+
+    $beforeCsv = Resolve-ReportCsv $CompareBefore 'Vorher'
+    $afterCsv  = Resolve-ReportCsv $CompareAfter  'Nachher'
+
+    # Auto-Erkennung: ohne -CompareBefore/-CompareAfter aeltester+neuester Hauptreport aus ReportPath
+    if (-not $beforeCsv -or -not $afterCsv) {
+        $auto = @(Get-ChildItem -Path (Join-Path $ReportPath 'SMB_Kerberos_report_*.csv') -File -EA SilentlyContinue |
+                  Where-Object { $_.Name -notmatch '_KerberosAudit|_recommendations|_urgent_fix' } |
+                  Sort-Object LastWriteTime)
+        if ($auto.Count -lt 2) {
+            Write-Host "`n  FEHLER: -Mode Compare benoetigt -CompareBefore/-CompareAfter oder" -ForegroundColor Red
+            Write-Host "  mindestens zwei SMB_Kerberos_report_*.csv unter $ReportPath." -ForegroundColor Red
+            return
+        }
+        $beforeCsv = $auto[0].FullName
+        $afterCsv  = $auto[$auto.Count-1].FullName
+        Write-Host "  Auto-Auswahl aus ${ReportPath}:" -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "  Vorher : $beforeCsv" -ForegroundColor White
+    Write-Host "  Nachher: $afterCsv" -ForegroundColor White
+
+    $before = @(Import-Csv -Path $beforeCsv -Delimiter ';')
+    $after  = @(Import-Csv -Path $afterCsv  -Delimiter ';')
+    Write-Host ("  Server: {0} vorher | {1} nachher" -f $before.Count, $after.Count) -ForegroundColor White
+
+    # Index nach ComputerName (O(1)-Join)
+    $bIdx = @{}; foreach ($r in $before) { $bIdx[[string]$r.ComputerName] = $r }
+    $aIdx = @{}; foreach ($r in $after)  { $aIdx[[string]$r.ComputerName] = $r }
+
+    function Get-Col { param($Row, [string]$Name)
+        $p = $Row.PSObject.Properties[$Name]
+        if ($p) { [string]$p.Value } else { '' }
+    }
+
+    $diffs = New-Object System.Collections.Generic.List[PSObject]
+    foreach ($name in ($bIdx.Keys | Sort-Object)) {
+        if (-not $aIdx.ContainsKey($name)) {
+            $diffs.Add([PSCustomObject]@{ ComputerName=$name; Einstellung='(Server)'; Vorher='vorhanden'; Nachher='FEHLT im Nachher-Report' })
+            continue
+        }
+        $b = $bIdx[$name]; $a = $aIdx[$name]
+        foreach ($col in $settingCols) {
+            $vb = Get-Col $b $col; $va = Get-Col $a $col
+            if ($vb -ne $va) {
+                $diffs.Add([PSCustomObject]@{ ComputerName=$name; Einstellung=$col; Vorher=$vb; Nachher=$va })
+            }
+        }
+    }
+    foreach ($name in ($aIdx.Keys | Sort-Object)) {
+        if (-not $bIdx.ContainsKey($name)) {
+            $diffs.Add([PSCustomObject]@{ ComputerName=$name; Einstellung='(Server)'; Vorher='FEHLT im Vorher-Report'; Nachher='vorhanden' })
+        }
+    }
+
+    Write-Host ""
+    Write-Host "=== AKKUMULIERT: WAS HAT SICH GEAENDERT? ===" -ForegroundColor Yellow
+    if ($diffs.Count -eq 0) {
+        Write-Host "  Keine Aenderung an den ueberwachten Einstellungen — das Update hat nichts umgestellt." -ForegroundColor Green
+    } else {
+        $grouped = @($diffs | Group-Object Einstellung, Vorher, Nachher | Sort-Object Count -Descending)
+        foreach ($g in $grouped) {
+            $ex = $g.Group[0]
+            $servers = @($g.Group | ForEach-Object { $_.ComputerName } | Sort-Object)
+            $show = ($servers | Select-Object -First 10) -join ', '
+            if ($servers.Count -gt 10) { $show += " (+$($servers.Count-10) weitere)" }
+            $color = if ($ex.Einstellung -in @('OSBuild','IsServer2025')) { 'Cyan' }
+                     elseif ($ex.Einstellung -eq '(Server)') { 'Yellow' } else { 'Red' }
+            Write-Host ("  [{0,3}x] {1}: '{2}' -> '{3}'" -f $g.Count, $ex.Einstellung, $ex.Vorher, $ex.Nachher) -ForegroundColor $color
+            Write-Host ("         {0}" -f $show) -ForegroundColor DarkGray
+        }
+        Write-Host ""
+        Write-Host ("  Gesamt: {0} Aenderungen auf {1} Servern" -f $diffs.Count, (@($diffs | Select-Object -ExpandProperty ComputerName -Unique).Count)) -ForegroundColor White
+        Write-Host "  Hinweis: OSBuild/IsServer2025 = Patch-Evidenz (erwartet, cyan). Rot = stille Umstellung durch das Update." -ForegroundColor DarkGray
+    }
+
+    $outDir = $ReportPath
+    if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
+    if ($diffs.Count -gt 0) {
+        $diffCsv = Join-Path $outDir "SMB_Kerberos_Diff_${ts}.csv"
+        $diffs | Export-Csv -Path $diffCsv -NoTypeInformation -Encoding UTF8 -Delimiter ';'
+        Write-Host ""
+        Write-Host "  Diff-CSV: $diffCsv ($($diffs.Count) Zeilen)" -ForegroundColor Green
+    }
+}
+
+#endregion
+
 #region ============ MAIN ============
 
 function Invoke-ModeReport {
@@ -4975,7 +5103,7 @@ function Invoke-ModeReport {
 if ($ImportOnly -or $MyInvocation.InvocationName -eq '.') {
     Write-Host ""
     Write-Host "  Invoke-RC4Audit v1.0 — Funktionen geladen (ImportOnly)" -ForegroundColor Cyan
-    Write-Host "  Modi:   Invoke-ModeReadiness  Invoke-ModeProve  Invoke-ModeDiscover  Invoke-ModeReport" -ForegroundColor DarkGray
+    Write-Host "  Modi:   Invoke-ModeReadiness  Invoke-ModeProve  Invoke-ModeDiscover  Invoke-ModeReport  Invoke-ModeCompare" -ForegroundColor DarkGray
     Write-Host "  Basis:  Discover-Helfer (SafeCount, Get-EncLabel, Get-XmlField, Get-EncCategory, ...)" -ForegroundColor DarkGray
     Write-Host "  Report: Invoke-ReportPlain  Invoke-ReportDG (Klassen DGColor/DGHtml/DGDocument)" -ForegroundColor DarkGray
     Write-Host ""
@@ -4994,6 +5122,7 @@ switch ($Mode) {
     'Prove'     { Invoke-ModeProve }
     'Discover'  { Invoke-ModeDiscover }
     'Report'    { Invoke-ModeReport }
+    'Compare'   { Invoke-ModeCompare }
     'Full'      {
         Invoke-ModeReadiness
         Invoke-ModeProve

@@ -30,6 +30,11 @@ Phase 3: Bewerten (auf Workstation, ohne DC-Zugriff)
 
 Phase 4: Beheben
   └── Urgent Fixes aus dem Report umsetzen
+
+Nach dem Patch: Was hat das Update umgestellt? (akkumuliert ueber alle Server)
+  ├── .\Invoke-RC4Audit.ps1 -Mode Readiness -Scope AllServers        → Nachher-Report
+  └── .\Invoke-RC4Audit.ps1 -Mode Compare                            → Diff (auto: aeltester vs. neuester Report in C:\Temp)
+      Explizit: -CompareBefore <alt.csv> -CompareAfter <neu.csv>
 ```
 
 ---
