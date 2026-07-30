@@ -56,6 +56,15 @@
 .PARAMETER CountOnly
     (Prove) Schnellmodus: nur Zaehlung via wevtutil.
 
+.PARAMETER NoBootFilter
+    (Prove) Boot-Fenster NICHT als Rauschen markieren. Standard: Events im
+    Reboot-Fenster (Boot -2 min bis +BootWindowMinutes) werden ausgewiesen,
+    aber nicht als Befund gezaehlt — sie sind by design (Dienste-Neustart,
+    Wininit, gecachte Credentials).
+
+.PARAMETER BootWindowMinutes
+    (Prove) Nachlauf des Boot-Fensters in Minuten. Standard: 5.
+
 .PARAMETER SkipEvents
     (Discover) Nur AD-Discovery, keine Event-Log-Analyse.
 
@@ -140,6 +149,8 @@ param(
 
     # Prove (ehem. Prove-RC4Usage)
     [switch]$CountOnly,
+    [switch]$NoBootFilter,
+    [int]$BootWindowMinutes = 5,
 
     # Discover (ehem. Discover-RC4Environment)
     [switch]$SkipEvents,
@@ -2026,6 +2037,60 @@ function Find-AllDomainServers {
 
 #endregion
 
+# --- Boot-Fenster-Erkennung (Rausch-Filter) ---
+# Ein Reboot erzeugt systematisch Eintraege die KEIN Befund sind: Dienste starten
+# neu und authentifizieren sich, gecachte Credentials laufen an, Wininit schreibt
+# Boot-Eintraege. Diese Events werden markiert und aus den Problemzaehlern
+# herausgehalten — aber immer ausgewiesen, nie stumm unterdrueckt.
+# LastBootUpTime allein reicht nicht: es kennt nur den letzten Start. Updates mit
+# Doppel-Neustart (z.B. Secure-Boot-Zertifikat) erzeugen zwei Fenster, daher
+# zusaetzlich Event 6005 (Eventlog-Dienst gestartet) aus dem Analysefenster.
+function Get-BootWindows {
+    param([long]$MsBack, [int]$PostRollMinutes = 5, [int]$PreRollMinutes = 2)
+    $boots = New-Object System.Collections.Generic.List[datetime]
+    try {
+        $lb = (Get-CimInstance Win32_OperatingSystem -EA Stop).LastBootUpTime
+        if ($lb) { [void]$boots.Add([datetime]$lb) }
+    } catch {}
+    $xmlBoot = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[(EventID=6005) and TimeCreated[timediff(@SystemTime) &lt;= MSBACK_PLACEHOLDER]]]</Select></Query></QueryList>'.Replace('MSBACK_PLACEHOLDER', $MsBack)
+    try {
+        foreach ($e in @(Get-WinEvent -FilterXml $xmlBoot -MaxEvents 50 -EA Stop)) {
+            if ($e.TimeCreated) { [void]$boots.Add([datetime]$e.TimeCreated) }
+        }
+    } catch {}
+
+    $windows = New-Object System.Collections.Generic.List[PSObject]
+    foreach ($b in @($boots | Sort-Object)) {
+        # 60s-Schwelle: fasst denselben Start aus zwei Quellen zusammen (CIM
+        # LastBootUpTime vs. Event 6005 liegen wenige Sekunden auseinander),
+        # trennt aber echte Doppel-Neustarts (Secure-Boot-Update: ~2 min Abstand).
+        # Lieber ein Fenster zu viel als eines zu kurz — ueberlappende Fenster
+        # sind harmlos, ein verschmolzenes verliert Abdeckung.
+        $dup = $false
+        foreach ($w in $windows) {
+            if ([math]::Abs(($b - $w.BootTime).TotalSeconds) -le 60) { $dup = $true; break }
+        }
+        if ($dup) { continue }
+        [void]$windows.Add([PSCustomObject]@{
+            BootTime = $b
+            Start    = $b.AddMinutes(-1 * $PreRollMinutes)
+            End      = $b.AddMinutes($PostRollMinutes)
+        })
+    }
+    return ,$windows
+}
+
+function Test-BootWindow {
+    param($Time, $Windows)
+    if ($null -eq $Time) { return $false }
+    $list = @($Windows)
+    if ($list.Count -eq 0) { return $false }
+    $t = $null
+    try { $t = [datetime]$Time } catch { return $false }
+    foreach ($w in $list) { if ($t -ge $w.Start -and $t -le $w.End) { return $true } }
+    return $false
+}
+
 #region --- Phase 1.5: Kerberos Encryption Audit (AD-only) ---
 
 function Get-KerberosEncryptionAudit {
@@ -3021,6 +3086,21 @@ function Invoke-ModeProve {
 
     #region --- Check 1: RC4 TGTs (Event 4768 via FilterXML) ---
 
+    # Boot-Fenster ermitteln (Rausch-Filter fuer Events die ein Reboot by design erzeugt)
+    # Vorinitialisierung zwingend: die Boot-Listen werden in try-Bloecken gefuellt.
+    # Greift ein catch (keine Events), waeren sie sonst undefiniert — und
+    # @($undefined).Count ergibt 1, nicht 0. Das wuerde die Zusammenfassung verfaelschen.
+    $boot14 = @(); $boot4 = @(); $bootPreAuth = @(); $bootLogon = @(); $bootLock = @()
+    $bootWindows = @()
+    if (-not $NoBootFilter) {
+        $bootWindows = @(Get-BootWindows -MsBack $msBack -PostRollMinutes $BootWindowMinutes)
+        if ($bootWindows.Count -gt 0) {
+            $bw = ($bootWindows | ForEach-Object { $_.BootTime.ToString('dd.MM. HH:mm:ss') }) -join ', '
+            Write-Host "  Boot-Fenster im Zeitraum: $($bootWindows.Count) ($bw) — Events darin gelten als by design" -ForegroundColor DarkGray
+            Write-Host ""
+        }
+    }
+
     Write-Host "=== CHECK 1: TGT Requests (Event 4768) ===" -ForegroundColor Yellow
     Write-Host "  Using FilterXML (server-side filtering)..." -NoNewline
 
@@ -3142,13 +3222,21 @@ function Invoke-ModeProve {
     Write-Host "  Event 14 (KDC_ERR_ETYPE_NOSUPP)..." -NoNewline
     $evt14 = @()
     try {
-        $evt14 = Get-WinEvent -FilterXml $xmlErr14 -MaxEvents 50 -EA Stop
-        Write-Host " $($evt14.Count) errors!" -ForegroundColor Red
-        foreach ($e in ($evt14 | Select-Object -First 3)) {
-            $x = [xml]$e.ToXml()
-            Write-Host "    $($e.TimeCreated): $($e.Message.Substring(0, [math]::Min(120, $e.Message.Length)))..." -ForegroundColor Red
+        $raw14 = @(Get-WinEvent -FilterXml $xmlErr14 -MaxEvents 50 -EA Stop)
+        $boot14 = @($raw14 | Where-Object { Test-BootWindow $_.TimeCreated $bootWindows })
+        $evt14  = @($raw14 | Where-Object { -not (Test-BootWindow $_.TimeCreated $bootWindows) })
+        if ($evt14.Count -eq 0) {
+            Write-Host " 0 (good)" -ForegroundColor Green
+        } else {
+            Write-Host " $($evt14.Count) errors!" -ForegroundColor Red
+            foreach ($e in ($evt14 | Select-Object -First 3)) {
+                Write-Host "    $($e.TimeCreated): $($e.Message.Substring(0, [math]::Min(120, $e.Message.Length)))..." -ForegroundColor Red
+            }
+            if ($evt14.Count -gt 3) { Write-Host "    ... and $($evt14.Count - 3) more" -ForegroundColor Red }
         }
-        if ($evt14.Count -gt 3) { Write-Host "    ... and $($evt14.Count - 3) more" -ForegroundColor Red }
+        if ($boot14.Count -gt 0) {
+            Write-Host "    ($($boot14.Count) im Boot-Fenster — by design, nicht gezaehlt)" -ForegroundColor DarkGray
+        }
     }
     catch {
         if ($_.Exception.Message -match 'No events were found') {
@@ -3162,8 +3250,14 @@ function Invoke-ModeProve {
     Write-Host "  Event 4 (Client key not found)..." -NoNewline
     $evt4 = @()
     try {
-        $evt4 = Get-WinEvent -FilterXml $xmlErr4 -MaxEvents 50 -EA Stop
-        Write-Host " $($evt4.Count) errors!" -ForegroundColor Red
+        $raw4 = @(Get-WinEvent -FilterXml $xmlErr4 -MaxEvents 50 -EA Stop)
+        $boot4 = @($raw4 | Where-Object { Test-BootWindow $_.TimeCreated $bootWindows })
+        $evt4  = @($raw4 | Where-Object { -not (Test-BootWindow $_.TimeCreated $bootWindows) })
+        if ($evt4.Count -eq 0) { Write-Host " 0 (good)" -ForegroundColor Green }
+        else { Write-Host " $($evt4.Count) errors!" -ForegroundColor Red }
+        if ($boot4.Count -gt 0) {
+            Write-Host "    ($($boot4.Count) im Boot-Fenster — by design, nicht gezaehlt)" -ForegroundColor DarkGray
+        }
     }
     catch {
         if ($_.Exception.Message -match 'No events were found') {
@@ -3221,8 +3315,13 @@ function Invoke-ModeProve {
 
     $preAuthFails = @()
     try {
-        $rawPreAuth = Get-WinEvent -FilterXml $xmlPreAuth -MaxEvents $MaxEvents -EA Stop
+        $rawPreAuthAll = @(Get-WinEvent -FilterXml $xmlPreAuth -MaxEvents $MaxEvents -EA Stop)
+        $bootPreAuth = @($rawPreAuthAll | Where-Object { Test-BootWindow $_.TimeCreated $bootWindows })
+        $rawPreAuth  = @($rawPreAuthAll | Where-Object { -not (Test-BootWindow $_.TimeCreated $bootWindows) })
         Write-Host " $($rawPreAuth.Count) Fehler" -ForegroundColor $(if ($rawPreAuth.Count -gt 50) {'Red'} elseif ($rawPreAuth.Count -gt 0) {'Yellow'} else {'Green'})
+        if ($bootPreAuth.Count -gt 0) {
+            Write-Host "    ($($bootPreAuth.Count) im Boot-Fenster — Dienste-Neustart, by design, nicht gezaehlt)" -ForegroundColor DarkGray
+        }
         foreach ($evt in $rawPreAuth) {
             $x = [xml]$evt.ToXml()
             $preAuthFails += [PSCustomObject]@{
@@ -3280,8 +3379,13 @@ function Invoke-ModeProve {
 
     $logonFails = @()
     try {
-        $rawLogonFail = Get-WinEvent -FilterXml $xmlLogonFail -MaxEvents $MaxEvents -EA Stop
+        $rawLogonAll  = @(Get-WinEvent -FilterXml $xmlLogonFail -MaxEvents $MaxEvents -EA Stop)
+        $bootLogon    = @($rawLogonAll | Where-Object { Test-BootWindow $_.TimeCreated $bootWindows })
+        $rawLogonFail = @($rawLogonAll | Where-Object { -not (Test-BootWindow $_.TimeCreated $bootWindows) })
         Write-Host " $($rawLogonFail.Count)" -ForegroundColor $(if ($rawLogonFail.Count -gt 100) {'Red'} elseif ($rawLogonFail.Count -gt 0) {'Yellow'} else {'Green'})
+        if ($bootLogon.Count -gt 0) {
+            Write-Host "    ($($bootLogon.Count) im Boot-Fenster — by design, nicht gezaehlt)" -ForegroundColor DarkGray
+        }
         foreach ($evt in $rawLogonFail) {
             $x = [xml]$evt.ToXml()
             $logonFails += [PSCustomObject]@{
@@ -3327,8 +3431,14 @@ function Invoke-ModeProve {
 
     $lockouts = @()
     try {
-        $rawLockout = Get-WinEvent -FilterXml $xmlLockout -MaxEvents $MaxEvents -EA Stop
+        # Lockouts werden NICHT gefiltert — eine Kontosperrung ist nie "by design".
+        # Sie wird nur markiert wenn sie ins Boot-Fenster faellt (Kontext fuer die Ursache).
+        $rawLockout = @(Get-WinEvent -FilterXml $xmlLockout -MaxEvents $MaxEvents -EA Stop)
         Write-Host " $($rawLockout.Count)" -ForegroundColor $(if ($rawLockout.Count -gt 20) {'Red'} elseif ($rawLockout.Count -gt 0) {'Yellow'} else {'Green'})
+        $bootLock = @($rawLockout | Where-Object { Test-BootWindow $_.TimeCreated $bootWindows })
+        if ($bootLock.Count -gt 0) {
+            Write-Host "    ($($bootLock.Count) davon im Boot-Fenster — Ursache pruefen, wird trotzdem gezaehlt)" -ForegroundColor Yellow
+        }
         foreach ($evt in $rawLockout) {
             $x = [xml]$evt.ToXml()
             $lockouts += [PSCustomObject]@{
@@ -3525,6 +3635,10 @@ function Invoke-ModeProve {
     Write-Host "  RC4 Service Tickets     : $rc4SvcCount" -ForegroundColor $(if ($rc4SvcCount -gt 0) {'Red'} else {'Green'})
     Write-Host "  RC4 Ticket Renewals     : $rc4RenewCount" -ForegroundColor $(if ($rc4RenewCount -gt 0) {'Red'} else {'Green'})
     Write-Host "  Kerberos EncType Fehler : $errCount" -ForegroundColor $(if ($errCount -gt 0) {'Red'} else {'Green'})
+    $bootTotal = (@($boot14).Count + @($boot4).Count + @($bootPreAuth).Count + @($bootLogon).Count)
+    if ($bootTotal -gt 0) {
+        Write-Host "  davon Boot-Rauschen      : $bootTotal (nicht gezaehlt)" -ForegroundColor DarkGray
+    }
     Write-Host ""
     Write-Host "  --- Fallback-Kette ---" -ForegroundColor White
     Write-Host "  Pre-Auth Fehler (4771)  : $preAuthCount" -ForegroundColor $(if ($preAuthCount -gt 50) {'Red'} elseif ($preAuthCount -gt 0) {'Yellow'} else {'Green'})
