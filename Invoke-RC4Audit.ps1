@@ -3135,7 +3135,9 @@ function Invoke-ModeProve {
     Write-Host "=== CHECK 3: Kerberos EncType Errors ===" -ForegroundColor Yellow
 
     # Event 14 — KDC_ERR_ETYPE_NOSUPP
-    $xmlErr14 = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[(EventID=14) and TimeCreated[timediff(@SystemTime) &lt;= MSBACK_PLACEHOLDER]]]</Select></Query></QueryList>'.Replace('MSBACK_PLACEHOLDER', $msBack)
+    # Provider-Filter zwingend: ohne ihn matcht EventID 14 auch Wininit
+    # ("Credential Guard (LsaIso.exe) configuration") und andere System-Log-Quellen.
+    $xmlErr14 = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''Microsoft-Windows-Kerberos-Key-Distribution-Center''] and (EventID=14) and TimeCreated[timediff(@SystemTime) &lt;= MSBACK_PLACEHOLDER]]]</Select></Query></QueryList>'.Replace('MSBACK_PLACEHOLDER', $msBack)
 
     Write-Host "  Event 14 (KDC_ERR_ETYPE_NOSUPP)..." -NoNewline
     $evt14 = @()
