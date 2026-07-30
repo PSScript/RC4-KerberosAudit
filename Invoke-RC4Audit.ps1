@@ -3472,26 +3472,26 @@ function Invoke-ModeProve {
         Get-Command Get-ADComputer -EA Stop | Out-Null
 
         Write-Host "  Computer accounts with RC4..." -NoNewline
-        $rc4Comp = Get-ADComputer -Filter * -Properties 'msDS-SupportedEncryptionTypes' |
-            Where-Object { $_.'msDS-SupportedEncryptionTypes' -band 0x4 }
+        $rc4Comp = @(Get-ADComputer -Filter * -Properties 'msDS-SupportedEncryptionTypes' |
+            Where-Object { $_.'msDS-SupportedEncryptionTypes' -band 0x4 })
         Write-Host " $($rc4Comp.Count)" -ForegroundColor $(if ($rc4Comp.Count -gt 0) {'Yellow'} else {'Green'})
 
         Write-Host "  RC4-ONLY computers (will break)..." -NoNewline
-        $rc4Only = $rc4Comp | Where-Object { -not ($_.'msDS-SupportedEncryptionTypes' -band 0x18) }
+        $rc4Only = @($rc4Comp | Where-Object { -not ($_.'msDS-SupportedEncryptionTypes' -band 0x18) })
         Write-Host " $($rc4Only.Count)" -ForegroundColor $(if ($rc4Only.Count -gt 0) {'Red'} else {'Green'})
 
         Write-Host "  gMSAs with RC4..." -NoNewline
-        $rc4gMSA = Get-ADServiceAccount -Filter * -Properties 'msDS-SupportedEncryptionTypes' |
-            Where-Object { $_.'msDS-SupportedEncryptionTypes' -band 0x4 }
+        $rc4gMSA = @(Get-ADServiceAccount -Filter * -Properties 'msDS-SupportedEncryptionTypes' |
+            Where-Object { $_.'msDS-SupportedEncryptionTypes' -band 0x4 })
         Write-Host " $($rc4gMSA.Count)" -ForegroundColor $(if ($rc4gMSA.Count -gt 0) {'Yellow'} else {'Green'})
 
         Write-Host "  Trusts without AES..." -NoNewline
         $domDN = (Get-ADDomain).DistinguishedName
-        $trusts = Get-ADObject -SearchBase "CN=System,$domDN" -LDAPFilter '(objectClass=trustedDomain)' `
-            -Properties 'msDS-SupportedEncryptionTypes'
-        $rc4Trusts = $trusts | Where-Object {
+        $trusts = @(Get-ADObject -SearchBase "CN=System,$domDN" -LDAPFilter '(objectClass=trustedDomain)' `
+            -Properties 'msDS-SupportedEncryptionTypes')
+        $rc4Trusts = @($trusts | Where-Object {
             $e = $_.'msDS-SupportedEncryptionTypes'; $null -eq $e -or $e -eq 0 -or ($e -band 0x4 -and -not ($e -band 0x18))
-        }
+        })
         Write-Host " $($rc4Trusts.Count) / $($trusts.Count)" -ForegroundColor $(if ($rc4Trusts.Count -gt 0) {'Red'} else {'Green'})
     }
     catch {
