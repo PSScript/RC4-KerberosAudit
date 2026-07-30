@@ -2281,6 +2281,9 @@ function Get-RoleRisk {
 
 #region ============ MODUS: READINESS ============
 function Invoke-ModeReadiness {
+    # Original lief OHNE StrictMode (implizite .Count-Emulation auf Skalaren/$null).
+    # Modus-Scope: neutralisiert das globale v2 fuer diesen Modus + gerufene Helfer.
+    Set-StrictMode -Off
     #region --- Main Execution ---
 
     Write-Host ""
@@ -2819,6 +2822,8 @@ function Invoke-ModeReadiness {
 
 #region ============ MODUS: PROVE ============
 function Invoke-ModeProve {
+    # Original lief OHNE StrictMode — Modus-Scope wie bei Readiness.
+    Set-StrictMode -Off
     # Kapselung: eigene Helfer (Get-EncLabel/Get-XmlField-Variante) bleiben lokal
     $ExportPath = $ReportPath
     if (-not (Test-Path $ExportPath)) { New-Item -Path $ExportPath -ItemType Directory -Force | Out-Null }
@@ -3559,6 +3564,7 @@ function Invoke-ModeProve {
 
 #region ============ MODUS: DISCOVER ============
 function Invoke-ModeDiscover {
+    Set-StrictMode -Version 2   # wie im Original
     $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
     $msBack = $Hours * 3600 * 1000
 
@@ -3961,6 +3967,7 @@ function Invoke-ModeDiscover {
 
 #region ============ MODUS: REPORT (Plain — XLSX + HTML) ============
 function Invoke-ReportPlain {
+    Set-StrictMode -Version 2   # wie im Original
     # Kapselung: eigene SafeCount/Normalize-TypLabel/Import-OptionalCsv bleiben lokal
     $ReportPath = $ReportSource
     $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -4487,6 +4494,7 @@ tr:nth-child(even) { background: #f5f0f0; }
 
 #region ============ MODUS: REPORT (DG — Corporate Design HTML) ============
 function Invoke-ReportDG {
+    Set-StrictMode -Version 2   # wie im Original
     # Kapselung wie Plain; Klassen DGColor/DGHtml/DGDocument sind global (Parse-Zeit)
     $ReportPath = $ReportSource
     # ═══════════════════════════════════════════════════════════════
