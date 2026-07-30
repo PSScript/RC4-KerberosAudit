@@ -1,30 +1,32 @@
 # RC4-KerberosAudit — Nutzungsanleitung
 
-Vier Skripte für die Analyse und Bewertung von Kerberos RC4-Risiken bei der Einführung von Windows Server 2025 in gemischte Umgebungen.
+Ein konsolidiertes Skript (`Invoke-RC4Audit.ps1`) für die Analyse und Bewertung von Kerberos RC4-Risiken bei der Einführung von Windows Server 2025 in gemischte Umgebungen. Die vier bisherigen Einzelskripte sind als Modi enthalten — Ausgaben, CSV-Namen und Spalten sind identisch geblieben.
 
 ## Übersicht
 
-| Skript | Zweck | Läuft auf | Braucht AD? | Braucht WinRM? |
+| Modus | Zweck (ehem. Skript) | Läuft auf | Braucht AD? | Braucht WinRM? |
 |---|---|---|---|---|
-| `Check-Server2025Defaults-v4.ps1` | SMB Signing, Kerberos EncType, LDAP, NTLM pro Server | DC | Ja | Ja (Phase 2) |
-| `Prove-RC4Usage.ps1` | Beweis: welche RC4-Tickets fließen (Event-Log) | DC | Nein | Nein |
-| `Discover-RC4Environment.ps1` | Citrix/Igel/Linux/Delegation + Kreuzprüfung | DC oder Workstation | Ja (Phase 1) | Nein |
-| `New-RC4Report.ps1` | Management-Report (XLSX + HTML) aus CSVs | Beliebig | Nein | Nein |
+| `-Mode Readiness` | SMB Signing, Kerberos EncType, LDAP, NTLM pro Server (Check-Server2025Defaults-v4) | DC | Ja | Ja (Phase 2) |
+| `-Mode Prove` | Beweis: welche RC4-Tickets fließen, Event-Log (Prove-RC4Usage) | DC | Nein | Nein |
+| `-Mode Discover` | Citrix/Igel/Linux/Delegation + Kreuzprüfung (Discover-RC4Environment) | DC oder Workstation | Ja (Phase 1) | Nein |
+| `-Mode Report` | Management-Report aus CSVs; `-ReportStyle Plain` = XLSX+HTML, `DG` = Corporate HTML (New-RC4Report / -DG) | Beliebig | Nein | Nein |
+| `-Mode Full` | Readiness + Prove + Discover, danach Report aus dem Discover-Ordner | DC | Ja | Ja |
 
 ## Workflow
 
 ```
 Phase 1: Daten sammeln (auf dem DC)
-  ├── Check-Server2025Defaults-v4.ps1    → SMB/LDAP/Kerberos CSVs
-  ├── Prove-RC4Usage.ps1                 → RC4-Ticket-Beweis CSVs
-  └── Discover-RC4Environment.ps1        → Discovery + Event-Korrelation CSVs
+  ├── .\Invoke-RC4Audit.ps1 -Mode Readiness    → SMB/LDAP/Kerberos CSVs
+  ├── .\Invoke-RC4Audit.ps1 -Mode Prove        → RC4-Ticket-Beweis CSVs
+  └── .\Invoke-RC4Audit.ps1 -Mode Discover     → Discovery + Event-Korrelation CSVs
+      (oder alles in einem Lauf: -Mode Full)
 
 Phase 2: Ergebnisse kopieren
   └── CSVs/ZIPs auf Admin-Workstation kopieren
 
 Phase 3: Bewerten (auf Workstation, ohne DC-Zugriff)
-  ├── Discover-RC4Environment.ps1 -ReassessFrom <pfad>   → Kreuzprüfung
-  └── New-RC4Report.ps1 -ReportPath <pfad>               → XLSX + HTML Report
+  ├── .\Invoke-RC4Audit.ps1 -Mode Discover -ReassessFrom <pfad>   → Kreuzprüfung
+  └── .\Invoke-RC4Audit.ps1 -Mode Report -ReportSource <pfad>     → XLSX + HTML Report
 
 Phase 4: Beheben
   └── Urgent Fixes aus dem Report umsetzen
@@ -32,14 +34,14 @@ Phase 4: Beheben
 
 ---
 
-## Check-Server2025Defaults-v4.ps1
+## Modus Readiness (ehem. Check-Server2025Defaults-v4)
 
 Audit von SMB Signing, Kerberos Encryption, LDAP Signing und NTLM Restrictions pro Server.
 
 ### Syntax
 
 ```powershell
-.\Check-Server2025Defaults-v4.ps1
+.\Invoke-RC4Audit.ps1 -Mode Readiness
     [-Scope <DomainControllers|MemberServers|All>]
     [-KerberosScope <DiscoveredOnly|AllServers|Full>]
     [-SkipRemoteCheck]
@@ -59,16 +61,16 @@ Audit von SMB Signing, Kerberos Encryption, LDAP Signing und NTLM Restrictions p
 
 ```powershell
 # Standard: alle Server, DiscoveredOnly Kerberos
-.\Check-Server2025Defaults-v4.ps1
+.\Invoke-RC4Audit.ps1 -Mode Readiness
 
 # Nur DCs prüfen
-.\Check-Server2025Defaults-v4.ps1 -Scope DomainControllers
+.\Invoke-RC4Audit.ps1 -Mode Readiness -Scope DomainControllers
 
 # Nur AD-Discovery, kein WinRM
-.\Check-Server2025Defaults-v4.ps1 -SkipRemoteCheck
+.\Invoke-RC4Audit.ps1 -Mode Readiness -SkipRemoteCheck
 
 # Alle Accounts in der Domäne (>5000 Objekte)
-.\Check-Server2025Defaults-v4.ps1 -KerberosScope Full
+.\Invoke-RC4Audit.ps1 -Mode Readiness -KerberosScope Full
 ```
 
 ### Erzeugte Dateien
@@ -90,14 +92,14 @@ Audit von SMB Signing, Kerberos Encryption, LDAP Signing und NTLM Restrictions p
 
 ---
 
-## Prove-RC4Usage.ps1
+## Modus Prove (ehem. Prove-RC4Usage)
 
 Beweist ob und welche RC4-Tickets aktuell fließen. Acht Event-Log-Checks.
 
 ### Syntax
 
 ```powershell
-.\Prove-RC4Usage.ps1
+.\Invoke-RC4Audit.ps1 -Mode Prove
     [-Hours <int>]
     [-MaxEvents <int>]
     [-ExportPath <Pfad>]
@@ -117,13 +119,13 @@ Beweist ob und welche RC4-Tickets aktuell fließen. Acht Event-Log-Checks.
 
 ```powershell
 # Standard: letzte 24h
-.\Prove-RC4Usage.ps1
+.\Invoke-RC4Audit.ps1 -Mode Prove
 
 # Letzte 72h, höheres Limit
-.\Prove-RC4Usage.ps1 -Hours 72 -MaxEvents 5000
+.\Invoke-RC4Audit.ps1 -Mode Prove -Hours 72 -MaxEvents 5000
 
 # Schnelle Zählung ohne CSV-Export
-.\Prove-RC4Usage.ps1 -CountOnly
+.\Invoke-RC4Audit.ps1 -Mode Prove -CountOnly
 ```
 
 ### Die 8 Checks
@@ -149,14 +151,14 @@ Alle in `C:\Temp\` (oder `-ExportPath`), Semikolon-Delimiter:
 
 ---
 
-## Discover-RC4Environment.ps1
+## Modus Discover (ehem. Discover-RC4Environment)
 
 Erkennt RC4-anfällige Systeme in heterogenen Umgebungen und korreliert Events.
 
 ### Syntax
 
 ```powershell
-.\Discover-RC4Environment.ps1
+.\Invoke-RC4Audit.ps1 -Mode Discover
     [-Hours <int>]
     [-MaxEvents <int>]
     [-ReportPath <Pfad>]
@@ -188,7 +190,7 @@ Erkennt RC4-anfällige Systeme in heterogenen Umgebungen und korreliert Events.
 #### Modus 1: Vollständiger Scan (auf dem DC)
 
 ```powershell
-.\Discover-RC4Environment.ps1 -Hours 24
+.\Invoke-RC4Audit.ps1 -Mode Discover -Hours 24
 ```
 
 Führt AD-Discovery + Event-Korrelation + Kreuzprüfung + Export durch.
@@ -196,7 +198,7 @@ Führt AD-Discovery + Event-Korrelation + Kreuzprüfung + Export durch.
 #### Modus 2: Reassessment (auf Workstation, ohne DC)
 
 ```powershell
-.\Discover-RC4Environment.ps1 -ReassessFrom 'C:\Temp\RC4_CONTOSO_20260319_162051'
+.\Invoke-RC4Audit.ps1 -Mode Discover -ReassessFrom 'C:\Temp\RC4_CONTOSO_20260319_162051'
 ```
 
 Lädt CSVs aus einem vorherigen Scan und führt nur die Kreuzprüfung durch. Keine AD-Abfragen, kein WinRM, kein EventLog.
@@ -204,7 +206,7 @@ Lädt CSVs aus einem vorherigen Scan und führt nur die Kreuzprüfung durch. Kei
 #### Modus 3: Funktionsbibliothek (Dot-Sourcing)
 
 ```powershell
-. .\Discover-RC4Environment.ps1 -ImportOnly
+. .\Invoke-RC4Audit.ps1 -Mode Discover -ImportOnly
 
 # Einzelne Funktionen verwenden:
 $citrix = Get-CitrixInfrastructure
@@ -286,32 +288,36 @@ Ohne ImportExcel: automatischer Fallback auf CSV-Export.
 
 ---
 
-## New-RC4Report.ps1
+## Modus Report (ehem. New-RC4Report / New-RC4Report-DG)
 
 Management-Report (XLSX + HTML) aus vorhandenen CSVs. Kein AD, kein WinRM.
 
 ### Syntax
 
 ```powershell
-.\New-RC4Report.ps1
-    -ReportPath <Pfad>
+.\Invoke-RC4Audit.ps1 -Mode Report
+    -ReportSource <Pfad>
+    [-ReportStyle Plain|DG]
     [-OutputPath <Pfad>]
     [-DomainLabel <string>]
+    [-Author <string>]
 ```
 
 ### Parameter
 
 | Parameter | Standard | Beschreibung |
 |---|---|---|
-| `-ReportPath` | *Pflicht* | Ordner mit den CSVs |
-| `-OutputPath` | `ReportPath\Report_[ts]` | Zielordner |
+| `-ReportSource` | *Pflicht* | Ordner mit den CSVs |
+| `-ReportStyle` | `Plain` | `Plain` = XLSX + HTML, `DG` = Corporate-Design-HTML |
+| `-OutputPath` | `ReportSource\Report_[ts]` (Plain) bzw. `ReportSource\RC4_[domain]_Risikobewertung.html` (DG) | Ziel |
 | `-DomainLabel` | Aus Ordnername | Anzeigename der Domäne |
+| `-Author` | leer | Autor im Report-Kopf (DG) |
 
 ### Beispiele
 
 ```powershell
 # Standard: Domain aus Ordnername
-.\New-RC4Report.ps1 -ReportPath 'C:\Temp\RC4_CONTOSO_20260319_162051'
+.\Invoke-RC4Audit.ps1 -Mode Report -ReportSource 'C:\Temp\RC4_CONTOSO_20260319_162051'
 
 # Mehrere Umgebungen
 $folders = @(
@@ -320,7 +326,7 @@ $folders = @(
     'C:\Temp\RC4_SCHOOL_20260319_162105'
 )
 foreach ($f in $folders) {
-    .\New-RC4Report.ps1 -ReportPath $f
+    .\Invoke-RC4Audit.ps1 -Mode Report -ReportSource $f
 }
 ```
 
