@@ -19,7 +19,7 @@ Eine Neuinstallation mit einem neuen Server-2025-Image reproduziert dasselbe Ver
 
 ## Skripte
 
-### Check-Server2025Defaults-v4.ps1
+### Modus Readiness (ehem. Check-Server2025Defaults-v4)
 
 Vollständiges Umgebungs-Audit. Erkennt Serverrollen aus AD, prüft Kerberos-Verschlüsselungstypen und validiert SMB/LDAP/NTLM-Einstellungen per WinRM.
 
@@ -44,16 +44,16 @@ Vollständiges Umgebungs-Audit. Erkennt Serverrollen aus AD, prüft Kerberos-Ver
 
 ```powershell
 # Standard: alle Phasen, nur erkannte Server
-.\Check-Server2025Defaults-v4.ps1
+.\Invoke-RC4Audit.ps1 -Mode Readiness
 
 # Nur AD-Analyse, kein WinRM (SOC-freundlich)
-.\Check-Server2025Defaults-v4.ps1 -SkipRemoteCheck
+.\Invoke-RC4Audit.ps1 -Mode Readiness -SkipRemoteCheck
 
 # Gesamte Domäne (5000+ Objekte — mit SOC abstimmen)
-.\Check-Server2025Defaults-v4.ps1 -KerberosScope Full
+.\Invoke-RC4Audit.ps1 -Mode Readiness -KerberosScope Full
 
 # Nur DCs mit CSV-Export
-.\Check-Server2025Defaults-v4.ps1 -Scope DomainControllers -ExportCsv C:\Temp\DC-Audit.csv
+.\Invoke-RC4Audit.ps1 -Mode Readiness -Scope DomainControllers -ExportCsv C:\Temp\DC-Audit.csv
 ```
 
 **KerberosScope im Detail:**
@@ -77,7 +77,7 @@ Jedes Finding enthält den zugehörigen GPO-Namen, Registry-Schlüssel, Cmdlet u
 
 ---
 
-### Prove-RC4Usage.ps1
+### Modus Prove (ehem. Prove-RC4Usage)
 
 Prüft ob RC4 Kerberos-Tickets aktiv in der Umgebung ausgestellt werden. Verwendet FilterXML für serverseitige Event-Filterung — keine O(n)-Probleme auf ausgelasteten DCs.
 
@@ -107,16 +107,16 @@ Prüft ob RC4 Kerberos-Tickets aktiv in der Umgebung ausgestellt werden. Verwend
 
 ```powershell
 # Standard: letzte 24 Stunden, max 500 Events
-.\Prove-RC4Usage.ps1
+.\Invoke-RC4Audit.ps1 -Mode Prove
 
 # Letzte 72 Stunden, mehr Events
-.\Prove-RC4Usage.ps1 -Hours 72 -MaxEvents 1000
+.\Invoke-RC4Audit.ps1 -Mode Prove -Hours 72 -MaxEvents 1000
 
 # Schnellmodus: nur Zählung
-.\Prove-RC4Usage.ps1 -CountOnly
+.\Invoke-RC4Audit.ps1 -Mode Prove -CountOnly
 
 # Letzte 7 Tage
-.\Prove-RC4Usage.ps1 -Hours 168
+.\Invoke-RC4Audit.ps1 -Mode Prove -Hours 168
 ```
 
 **Performance:**
@@ -146,7 +146,7 @@ Das Skript erkennt Lockouts (4740) die innerhalb von 60 Sekunden nach einem Kerb
 
 ---
 
-### Discover-RC4Environment.ps1
+### Modus Discover (ehem. Discover-RC4Environment)
 
 Erkennt RC4-anfällige Systeme in heterogenen Umgebungen und korreliert Kerberos-Events mit Anmeldefehlern. Ergänzung zu den beiden Audit-Skripten, Fokus auf Citrix, Igel, VMware, Linux und Delegation.
 
@@ -175,13 +175,13 @@ Erkennt RC4-anfällige Systeme in heterogenen Umgebungen und korreliert Kerberos
 
 ```powershell
 # Standard: Discovery + Events der letzten 24h
-.\Discover-RC4Environment.ps1
+.\Invoke-RC4Audit.ps1 -Mode Discover
 
 # Nur AD-Discovery, keine Events
-.\Discover-RC4Environment.ps1 -SkipEvents
+.\Invoke-RC4Audit.ps1 -Mode Discover -SkipEvents
 
 # 72 Stunden, mit E-Mail-Versand
-.\Discover-RC4Environment.ps1 -Hours 72 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
+.\Invoke-RC4Audit.ps1 -Mode Discover -Hours 72 -SendMail -MailTo "team@example.com" -SmtpServer "mail.example.com"
 ```
 
 **Erzeugte Reports** (Ordner `RC4_Discovery_[timestamp]` + ZIP):

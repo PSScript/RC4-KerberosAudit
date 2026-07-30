@@ -17,7 +17,7 @@ A reinstall from a clean Server 2025 image reproduces the same behavior — beca
 
 ## Scripts
 
-### Check-Server2025Defaults-v4.ps1
+### Readiness mode (formerly Check-Server2025Defaults-v4)
 
 Full environment audit. Discovers server roles from AD, checks Kerberos encryption types, and validates SMB/LDAP/NTLM settings via WinRM.
 
@@ -42,16 +42,16 @@ Full environment audit. Discovers server roles from AD, checks Kerberos encrypti
 
 ```powershell
 # Standard: all phases, discovered servers only
-.\Check-Server2025Defaults-v4.ps1
+.\Invoke-RC4Audit.ps1 -Mode Readiness
 
 # AD-only analysis, no WinRM (SOC-friendly)
-.\Check-Server2025Defaults-v4.ps1 -SkipRemoteCheck
+.\Invoke-RC4Audit.ps1 -Mode Readiness -SkipRemoteCheck
 
 # Full domain scan (5000+ objects — coordinate with SOC)
-.\Check-Server2025Defaults-v4.ps1 -KerberosScope Full
+.\Invoke-RC4Audit.ps1 -Mode Readiness -KerberosScope Full
 
 # DCs only with CSV export
-.\Check-Server2025Defaults-v4.ps1 -Scope DomainControllers -ExportCsv C:\Temp\DC-Audit.csv
+.\Invoke-RC4Audit.ps1 -Mode Readiness -Scope DomainControllers -ExportCsv C:\Temp\DC-Audit.csv
 ```
 
 **Auto-generated reports** (C:\Temp\, semicolon delimiter):
@@ -67,7 +67,7 @@ Each finding includes the relevant GPO name, registry key, cmdlet, and AD attrib
 
 ---
 
-### Prove-RC4Usage.ps1
+### Prove mode (formerly Prove-RC4Usage)
 
 Proves whether RC4 Kerberos tickets are actively issued in the environment. Uses FilterXML for server-side event filtering — no O(n) performance issues on busy DCs.
 
@@ -97,16 +97,16 @@ Proves whether RC4 Kerberos tickets are actively issued in the environment. Uses
 
 ```powershell
 # Standard: last 24 hours, max 500 events
-.\Prove-RC4Usage.ps1
+.\Invoke-RC4Audit.ps1 -Mode Prove
 
 # Last 72 hours, more events
-.\Prove-RC4Usage.ps1 -Hours 72 -MaxEvents 1000
+.\Invoke-RC4Audit.ps1 -Mode Prove -Hours 72 -MaxEvents 1000
 
 # Fast count mode
-.\Prove-RC4Usage.ps1 -CountOnly
+.\Invoke-RC4Audit.ps1 -Mode Prove -CountOnly
 
 # Last 7 days
-.\Prove-RC4Usage.ps1 -Hours 168
+.\Invoke-RC4Audit.ps1 -Mode Prove -Hours 168
 ```
 
 **Performance:**
