@@ -42,7 +42,7 @@ Audit von SMB Signing, Kerberos Encryption, LDAP Signing und NTLM Restrictions p
 
 ```powershell
 .\Invoke-RC4Audit.ps1 -Mode Readiness
-    [-Scope <DomainControllers|MemberServers|All>]
+    [-Scope <DomainControllers|MemberServers|All|AllServers>]
     [-KerberosScope <DiscoveredOnly|AllServers|Full>]
     [-SkipRemoteCheck]
     [-ExportCsv <Pfad>]
@@ -52,7 +52,7 @@ Audit von SMB Signing, Kerberos Encryption, LDAP Signing und NTLM Restrictions p
 
 | Parameter | Standard | Beschreibung |
 |---|---|---|
-| `-Scope` | `All` | Welche Systeme geprüft werden |
+| `-Scope` | `All` | Welche Systeme geprüft werden. `All` = rollen-entdeckte Server; `AllServers` = zusätzlich jedes aktivierte Server-OS-Konto der Domäne (SOC vorab informieren) |
 | `-KerberosScope` | `DiscoveredOnly` | Wie breit die EncType-Abfrage im AD läuft |
 | `-SkipRemoteCheck` | aus | Nur Phase 1 + 1.5, kein WinRM |
 | `-ExportCsv` | `C:\Temp\SMB_Kerberos_report_[ts].csv` | Export-Pfad |

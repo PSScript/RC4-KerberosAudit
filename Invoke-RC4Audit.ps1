@@ -39,7 +39,10 @@
     Discover erstellt RC4_<DOMAIN>_<ts>\ darunter.
 
 .PARAMETER Scope
-    (Readiness) DomainControllers | MemberServers | All. Standard: All
+    (Readiness) DomainControllers | MemberServers | All | AllServers. Standard: All
+    All = alle rollen-entdeckten Server (DC/Exchange/CA/Cluster/DFS/HyperV).
+    AllServers = zusaetzlich JEDES aktivierte Server-OS-Computerkonto der Domaene
+    (Phase 2 via WinRM auf allen Servern — SOC vorab informieren).
 
 .PARAMETER KerberosScope
     (Readiness) DiscoveredOnly | AllServers | Full. Standard: DiscoveredOnly
@@ -113,7 +116,7 @@ param(
     [string]$ReportPath = 'C:\Temp',
 
     # Readiness (ehem. Check-Server2025Defaults-v4)
-    [ValidateSet('DomainControllers', 'MemberServers', 'All')]
+    [ValidateSet('DomainControllers', 'MemberServers', 'All', 'AllServers')]
     [string]$Scope = 'All',
     [ValidateSet('DiscoveredOnly', 'AllServers', 'Full')]
     [string]$KerberosScope = 'DiscoveredOnly',
@@ -1969,6 +1972,29 @@ function Find-HyperVServers {
     return $count
 }
 
+# Alle aktivierten Server-OS-Computerkonten der Domaene (fuer -Scope AllServers).
+# Ergaenzt die Rollen-Discovery: Systeme ohne erkannte Rolle kommen als 'Server'
+# in die Inventur — Phase 2 prueft dann SMB/Kerberos auf JEDEM Server, nicht nur
+# auf DC/Exchange/CA/Cluster/DFS/HyperV. Bereits entdeckte Rollen bleiben unberuehrt.
+function Find-AllDomainServers {
+    param([string]$DomainDN)
+    $added = 0; $total = 0
+    try {
+        $all = Search-AD -SearchBase $DomainDN `
+            -LdapFilter '(&(objectCategory=computer)(operatingSystem=*Server*)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))' `
+            -Properties @('name','dNSHostName','operatingSystem')
+        foreach ($c in $all) {
+            $total++
+            $key = ([string]$c.Name).ToUpper()
+            if (-not $script:serverInventory.ContainsKey($key)) {
+                Add-ToInventory -Name $c.Name -HostName $c.dNSHostName -OS $c.operatingSystem -Role 'Server' -Source 'AD-OS'
+                $added++
+            }
+        }
+    } catch { }
+    return @{ Total = $total; Added = $added }
+}
+
 #endregion
 
 #region --- Phase 1.5: Kerberos Encryption Audit (AD-only) ---
@@ -2323,6 +2349,12 @@ function Invoke-ModeReadiness {
     Write-Host "  Hyper-V Hosts............" -NoNewline
     $n = Find-HyperVServers -DomainDN $domainDN; Write-Host " $n" -ForegroundColor Green
 
+    if ($Scope -eq 'AllServers') {
+        Write-Host "  All domain servers (OS).." -NoNewline
+        $allSrv = Find-AllDomainServers -DomainDN $domainDN
+        Write-Host " $($allSrv.Total) (davon neu: $($allSrv.Added))" -ForegroundColor Green
+    }
+
     Write-Host ""
     Write-Host "  Unique servers: $($script:serverInventory.Count)" -ForegroundColor Cyan
     Write-Host ""
@@ -2454,6 +2486,7 @@ function Invoke-ModeReadiness {
         'DomainControllers' { $script:serverInventory.GetEnumerator() | Where-Object { 'DC' -in $_.Value.Roles } }
         'MemberServers'     { $script:serverInventory.GetEnumerator() | Where-Object { 'DC' -notin $_.Value.Roles } }
         'All'               { $script:serverInventory.GetEnumerator() }
+        'AllServers'        { $script:serverInventory.GetEnumerator() }
     }
 
     $results = @()
@@ -2468,6 +2501,7 @@ function Invoke-ModeReadiness {
         DFS='DFS namespace/replication between nodes'
         Cluster='Inter-node communication (physical member)'
         HyperV='Live migration, shared storage'
+        Server='Member server ohne erkannte Rolle — Signing-Enforcement betrifft dessen Clients'
     }
 
     foreach ($entry in $toCheck) {
