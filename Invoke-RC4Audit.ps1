@@ -84,6 +84,11 @@
 .PARAMETER ImportOnly
     Laedt nur die Funktionen (Dot-Sourcing), fuehrt keinen Scan aus.
 
+.PARAMETER DiscoverAll
+    Breiten-Schalter: entspricht -Scope AllServers -KerberosScope AllServers.
+    Mit -Mode Full: kompletter Audit ueber alle Server der Domaene.
+    (KerberosScope Full — gesamte Domaene inkl. User/gMSA/Trusts — bleibt explizit.)
+
 .EXAMPLE
     .\Invoke-RC4Audit.ps1 -Mode Readiness
     .\Invoke-RC4Audit.ps1 -Mode Prove -Hours 168
@@ -91,6 +96,7 @@
     .\Invoke-RC4Audit.ps1 -Mode Discover -ReassessFrom 'C:\Temp\RC4_CONTOSO_20260319_162051'
     .\Invoke-RC4Audit.ps1 -Mode Report -ReportSource 'C:\Temp\RC4_CONTOSO_20260319_162051' -ReportStyle DG
     .\Invoke-RC4Audit.ps1 -Mode Full -Hours 168 -ReportStyle DG
+    .\Invoke-RC4Audit.ps1 -Mode Full -Hours 168 -DiscoverAll -ReportStyle DG
 
 .NOTES
     Datum   : 2026-07-30
@@ -142,12 +148,22 @@ param(
     [string]$Author = '',
     [string]$DomainLabel,
 
-    [switch]$ImportOnly
+    [switch]$ImportOnly,
+
+    # Breiten-Schalter: setzt Scope=AllServers und KerberosScope=AllServers
+    [switch]$DiscoverAll
 )
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Continue'
 $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+
+# -DiscoverAll: volle Breite (alle Server-OS-Konten + alle Server-Accounts im
+# Kerberos-Audit). Bewusst NICHT KerberosScope=Full (gesamte Domaene, SOC-Alarm).
+if ($DiscoverAll) {
+    $Scope = 'AllServers'
+    $KerberosScope = 'AllServers'
+}
 
 #region ============ DG CORPORATE DESIGN (Klassen, Modus Report -ReportStyle DG) ============
 

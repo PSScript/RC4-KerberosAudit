@@ -19,7 +19,7 @@ Phase 1: Daten sammeln (auf dem DC)
   ├── .\Invoke-RC4Audit.ps1 -Mode Readiness    → SMB/LDAP/Kerberos CSVs
   ├── .\Invoke-RC4Audit.ps1 -Mode Prove        → RC4-Ticket-Beweis CSVs
   └── .\Invoke-RC4Audit.ps1 -Mode Discover     → Discovery + Event-Korrelation CSVs
-      (oder alles in einem Lauf: -Mode Full)
+      (oder alles in einem Lauf: -Mode Full — volle Breite: -Mode Full -DiscoverAll)
 
 Phase 2: Ergebnisse kopieren
   └── CSVs/ZIPs auf Admin-Workstation kopieren
