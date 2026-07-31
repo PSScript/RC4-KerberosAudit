@@ -2077,7 +2077,10 @@ function Get-BootWindows {
             End      = $b.AddMinutes($PostRollMinutes)
         })
     }
-    return ,$windows
+    # KEIN ',$windows': der Aufrufer wrappt mit @(...). Mit Komma landet die
+    # Liste als EIN Element im Array, PowerShells Member-Enumeration macht aus
+    # $_.BootTime dann ein Object[] — Anzeige und Zeitvergleich brechen beide.
+    return $windows
 }
 
 function Test-BootWindow {
@@ -3095,7 +3098,7 @@ function Invoke-ModeProve {
     if (-not $NoBootFilter) {
         $bootWindows = @(Get-BootWindows -MsBack $msBack -PostRollMinutes $BootWindowMinutes)
         if ($bootWindows.Count -gt 0) {
-            $bw = ($bootWindows | ForEach-Object { $_.BootTime.ToString('dd.MM. HH:mm:ss') }) -join ', '
+            $bw = ($bootWindows | ForEach-Object { '{0:dd.MM. HH:mm:ss}' -f $_.BootTime }) -join ', '
             Write-Host "  Boot-Fenster im Zeitraum: $($bootWindows.Count) ($bw) — Events darin gelten als by design" -ForegroundColor DarkGray
             Write-Host ""
         }
